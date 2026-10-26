@@ -102,3 +102,66 @@ Mendeteksi dan secara otomatis mengirimkan file media (**gambar** dan **suara/au
 
 *Status: **✔ Selesai (Completed)***  
 *Diimplementasikan pada: 26 Oktober 2026*
+
+---
+
+## 📌 Feature 04: Follow-up Message Queue & Steering Handling
+
+### Ringkasan Fitur
+Menangani pesan baru saat Claude sedang aktif memproses task sebelumnya, dengan 3 mode (`default`, `queue`, `steer`), tombol batalkan/interupsi, dan persistensi di `settings.json`.
+
+*Status: **✔ Selesai (Completed)***  
+*Diimplementasikan pada: 26 Oktober 2026*
+
+---
+
+## 📌 Feature 05: Category & Channel Sync per Claude Session (Tabs in Discord)
+
+### Ringkasan Pendekatan
+Setiap text channel di Discord merepresentasikan satu tab / sesi Claude di PC. Pengguna cukup memilih channel untuk langsung berinteraksi dengan sesi tersebut tanpa perlu ganti sesi manual (`/session`).
+
+### Spesifikasi Arsitektur:
+1. **Kategori Khusus Discord:**
+   - Bot otomatis membuat dan memantau Kategori Channel (misal `📁 Claude Remote`).
+2. **Channel Mapping & Metadata Custom:**
+   - Nama channel disanitasi dari judul sesi Claude (`Layout GUI` -> `#layout-gui`).
+   - `channel.topic` menyimpan metadata identitas resmi: `SessionID: <uuid>`.
+   - Bot menyimpan memory cache / JSON map lokal untuk lookup $O(1)$.
+3. **Sinkronisasi 2-Arah (Diff Sync):**
+   - **Startup & Manual (`/sync` / `crc sync-channel`):**
+     - Sesi baru di PC: Dibuatkan channel baru dengan throttling halus (3 channel per 1 detik) agar bebas rate-limit Discord.
+     - Sesi yang sudah dihapus di PC: Channel terkait di Discord otomatis dihapus (`channel.delete()`).
+     - Sesi yang sudah ada: Diabaikan tanpa pemanggilan API berulang (startup instan).
+   - **Safety Guards:**
+     - Bot hanya menghapus channel di dalam kategori khusus yang memiliki metadata `SessionID`.
+     - Jika pembacaan sesi Claude gagal / bernilai 0 sesi, proses pembersihan dibatalkan untuk mencegah salah hapus massal.
+     - Penanganan batas 50 channel per kategori Discord.
+4. **Isolasi Penuh (Channel Isolation):**
+   - Bot hanya mendengarkan dan merespons prompt yang dikirim di dalam kategori channel tersebut.
+   - Pesan di channel luar kategori diabaikan sepenuhnya agar server tetap bersih dan privat.
+
+*Status: **✔ Selesai (Completed)***  
+*Diimplementasikan pada: 26 Oktober 2026*
+
+---
+
+## 📌 Feature 06: Multi-Threading Engine (Session-Isolated Runners)
+
+### Ringkasan Pendekatan
+Mengubah arsitektur single-thread bot menjadi arsitektur multi-threaded / multi-process. Setiap sesi Claude berjalan di process OS (`claude.exe`) terpisah secara on-demand, sehingga beberapa channel Discord dapat mengeksekusi task Claude secara paralel tanpa saling memblokir.
+
+### Spesifikasi Arsitektur:
+1. **Per-Session Runner Map (`Map<string, ClaudeHeadless>`):**
+   - Menggantikan variabel runner tunggal global dengan `activeRunners` berbasis `sessionId`.
+   - Tiap sesi memiliki siklus hidup independen (PID Windows terpisah).
+2. **Per-Session Queue & Follow-up Handlers:**
+   - Antrean pesan diisolasi per-sesi: `sessionQueues.set(sessionId, [...])`.
+   - Perintah di Channel A tidak akan memblokir atau mengantrekan perintah di Channel B.
+   - Mengirim beberapa pesan di channel yang sama tetap aman dengan sistem antrean/interupsi.
+3. **Session-Scoped Cancellation (`/stop` & Tombol Batalkan):**
+   - Menekan tombol `[⏹️ Batalkan]` atau menjalankan `/stop` hanya membatalkan child process untuk sesi yang bersangkutan.
+   - Sesi-sesi lain yang sedang aktif berjalan paralel tetap berjalan tanpa gangguan.
+
+*Status: **✔ Selesai (Completed)***  
+*Diimplementasikan pada: 26 Oktober 2026*
+

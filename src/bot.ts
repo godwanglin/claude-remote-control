@@ -40,6 +40,12 @@ import {
 import { settingsManager } from './settings-manager.js';
 import { ClaudeHeadless, getHostCredentials } from './claude-headless.js';
 import { detectTurnMediaFiles, DetectedMediaFile } from './media-detector.js';
+import { 
+  DEFAULT_CATEGORY_NAME, 
+  syncChannelsWithSessions, 
+  extractSessionIdFromTopic, 
+  resolveClaudeSessionFromId 
+} from './channel-manager.js';
 
 // Pastikan environment gateway Claude Desktop terinjeksi ke bot
 const hostCreds = getHostCredentials();
@@ -104,9 +110,8 @@ client.on('error', (err) => {
 
 let currentTargetSession: ClaudeSession | null = null;
 let isManualSessionLocked = settingsManager.settings.isManualSessionLocked;
-let activeRunner: ClaudeHeadless | null = null;
 
-// Antrean pesan dan penampung follow-up interaktif
+// Multi-Threading Runners & Antrean per-sesi Claude
 interface QueuedItem {
   id: string;
   message: Message;
@@ -116,9 +121,10 @@ interface QueuedItem {
   interactiveMessage?: Message;
 }
 
-const messageQueue: QueuedItem[] = [];
+const activeRunners = new Map<string, ClaudeHeadless>();
+const sessionQueues = new Map<string, QueuedItem[]>();
 const pendingFollowups = new Map<string, QueuedItem>();
-let isCurrentAbortForSteer = false;
+const steerFlags = new Map<string, boolean>();
 
 function safeContent(text: string): string {
   if (text.length <= 1950) return text;
@@ -519,6 +525,10 @@ const SLASH_COMMANDS = [
     description: 'Hentikan paksa proses Claude yang sedang berjalan saat ini'
   },
   {
+    name: 'sync',
+    description: 'Sinkronisasi kategori dan channel Discord dengan sesi Claude di PC'
+  },
+  {
     name: 'settings',
     description: 'Pusat kontrol setelan lengkap Claude (Sesi, Model, Izin, Tampilan, Effort, Timeout, Notif)'
   }
@@ -527,7 +537,7 @@ const SLASH_COMMANDS = [
 client.once('clientReady', async (c) => {
   console.log('\x1b[36m====================================================\x1b[0m');
   console.log(`\x1b[32m  BOT CLAUDE REMOTE AKTIF: ${c.user.tag}\x1b[0m`);
-  console.log(`\x1b[35m  MODE: HEADLESS NATIVE RUNNER (Anti-Timeout)\x1b[0m`);
+  console.log(`\x1b[35m  MODE: MULTI-THREADED HEADLESS RUNNER\x1b[0m`);
   if (isVerboseLog) {
     console.log(`\x1b[1;33m  LOG VERBOSE: AKTIF (Live detail pesan, tool use, output)\x1b[0m`);
   }
@@ -565,12 +575,22 @@ client.once('clientReady', async (c) => {
     console.warn(`\x1b[33m[Claude Target]\x1b[0m Belum ada sesi Claude Desktop yang terdeteksi.`);
   }
 
-  // Sinkronisasi 7 Slash Commands ke Discord API
+  // Sinkronisasi Slash Commands ke Discord API
   try {
     await c.application.commands.set(SLASH_COMMANDS);
-    console.log('\x1b[32m[Slash Commands]\x1b[0m 7 Slash Commands berhasil disinkronkan ke Discord API!');
+    console.log('\x1b[32m[Slash Commands]\x1b[0m 8 Slash Commands berhasil disinkronkan ke Discord API!');
   } catch (err: any) {
     console.warn('[Slash Commands Warn]', err.message);
+  }
+
+  // Sinkronisasi otomatis Kategori dan Channel Claude Remote di setiap server
+  for (const [, guild] of c.guilds.cache) {
+    try {
+      console.log(`\x1b[36m[Channel Sync]\x1b[0m Memulai sinkronisasi kategori & channel di server "${guild.name}"...`);
+      await syncChannelsWithSessions(guild);
+    } catch (err: any) {
+      console.error(`[Channel Sync Error] Gagal sinkronisasi guild "${guild.name}":`, err.message);
+    }
   }
 });
 
@@ -706,22 +726,30 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // 1. Tombol Stop / Batalkan Task Utama
+    // 1. Tombol Stop / Batalkan Task Utama (Session-Scoped)
     if (customId.startsWith('stop_')) {
-      if (activeRunner) {
+      const targetSessionId = customId.replace('stop_', '');
+      let runner = activeRunners.get(targetSessionId);
+      
+      // Fallback: Jika ID tidak langsung cocok (misal timestamp lama) tapi hanya ada 1 runner aktif
+      if (!runner && activeRunners.size === 1) {
+        runner = activeRunners.values().next().value;
+      }
+
+      if (runner) {
         if (!interaction.deferred && !interaction.replied) {
           await interaction.deferUpdate().catch(() => {});
         }
-        activeRunner.abort('user');
+        runner.abort('user');
       } else {
         if (!interaction.deferred && !interaction.replied) {
-          await interaction.reply({ content: 'ℹ️ Tidak ada proses Claude yang sedang berjalan.', ephemeral: true }).catch(() => {});
+          await interaction.reply({ content: 'ℹ️ Tidak ada proses Claude yang sedang berjalan untuk sesi ini.', ephemeral: true }).catch(() => {});
         }
       }
       return;
     }
 
-    // 2. Tombol Pilihan Follow-up: Masukkan Antrean
+    // 2. Tombol Pilihan Follow-up: Masukkan Antrean (Per-Sesi)
     if (customId.startsWith('fp_queue_')) {
       const id = customId.replace('fp_queue_', '');
       const item = pendingFollowups.get(id);
@@ -730,7 +758,14 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       pendingFollowups.delete(id);
-      messageQueue.push(item);
+
+      const sId = item.activeSession.sessionId;
+      let queue = sessionQueues.get(sId);
+      if (!queue) {
+        queue = [];
+        sessionQueues.set(sId, queue);
+      }
+      queue.push(item);
 
       const steerBtn = new ButtonBuilder()
         .setCustomId(`queue_steer_${item.id}`)
@@ -745,22 +780,25 @@ client.on('interactionCreate', async (interaction) => {
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(steerBtn, cancelBtn);
 
       await interaction.update({
-        content: `📥 **[Antrean #${messageQueue.length}]** Instruksi dimasukkan ke antrean.\nAkan diproses otomatis begitu langkah aktif selesai.`,
+        content: `📥 **[Antrean #${queue.length}]** Instruksi dimasukkan ke antrean sesi ini.\nAkan diproses otomatis begitu langkah aktif selesai.`,
         components: [row]
       }).catch(() => {});
       return;
     }
 
-    // 3. Tombol Pilihan Follow-up: Kirim Sekarang / Interupsi Langsung
+    // 3. Tombol Pilihan Follow-up: Kirim Sekarang / Interupsi Langsung (Per-Sesi)
     if (customId.startsWith('fp_steer_') || customId.startsWith('queue_steer_')) {
       const id = customId.startsWith('fp_steer_') ? customId.replace('fp_steer_', '') : customId.replace('queue_steer_', '');
       let item = pendingFollowups.get(id);
       if (item) {
         pendingFollowups.delete(id);
       } else {
-        const qIdx = messageQueue.findIndex(q => q.id === id);
-        if (qIdx !== -1) {
-          item = messageQueue.splice(qIdx, 1)[0];
+        for (const [, queue] of sessionQueues) {
+          const qIdx = queue.findIndex(q => q.id === id);
+          if (qIdx !== -1) {
+            item = queue.splice(qIdx, 1)[0];
+            break;
+          }
         }
       }
 
@@ -774,16 +812,17 @@ client.on('interactionCreate', async (interaction) => {
         components: []
       }).catch(() => {});
 
-      if (activeRunner) {
-        isCurrentAbortForSteer = true;
-        activeRunner.abort('user');
+      const sId = item.activeSession.sessionId;
+      const runner = activeRunners.get(sId);
+      if (runner) {
+        steerFlags.set(sId, true);
+        runner.abort('user');
       }
 
+      const steerItem = item;
       setTimeout(async () => {
-        const currentSession = await ensureActiveSession();
-        if (currentSession) {
-          await executeClaudeTurn(item.message, item.rawText, currentSession, true);
-        }
+        steerFlags.delete(sId);
+        await executeClaudeTurn(steerItem.message, steerItem.rawText, steerItem.activeSession, true);
       }, 700);
       return;
     }
@@ -792,9 +831,12 @@ client.on('interactionCreate', async (interaction) => {
     if (customId.startsWith('fp_cancel_') || customId.startsWith('queue_cancel_')) {
       const id = customId.startsWith('fp_cancel_') ? customId.replace('fp_cancel_', '') : customId.replace('queue_cancel_', '');
       pendingFollowups.delete(id);
-      const qIdx = messageQueue.findIndex(q => q.id === id);
-      if (qIdx !== -1) {
-        messageQueue.splice(qIdx, 1);
+      for (const [, queue] of sessionQueues) {
+        const qIdx = queue.findIndex(q => q.id === id);
+        if (qIdx !== -1) {
+          queue.splice(qIdx, 1);
+          break;
+        }
       }
 
       await interaction.update({
@@ -906,24 +948,68 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // 8. /stop
+    // 8. /stop (Mendukung stop per-channel sesi atau stop semua)
     if (commandName === 'stop') {
-      if (!activeRunner && messageQueue.length === 0) {
-        await interaction.reply({ content: 'ℹ️ Tidak ada proses Claude yang sedang berjalan atau mengantre.', ephemeral: true });
+      let targetSessionId: string | null = null;
+      if (interaction.channel && 'topic' in interaction.channel) {
+        targetSessionId = extractSessionIdFromTopic((interaction.channel as any).topic);
+      }
+
+      // Jika dijalankan di channel sesi tertentu yang sedang running
+      if (targetSessionId && activeRunners.has(targetSessionId)) {
+        const runner = activeRunners.get(targetSessionId);
+        if (runner) runner.abort('user');
+        const q = sessionQueues.get(targetSessionId);
+        const qCount = q ? q.length : 0;
+        if (q) q.length = 0;
+        await interaction.reply({ 
+          content: `⏹️ **[Stop]** Proses Claude pada channel/sesi ini berhasil dihentikan paksa.${qCount > 0 ? ` (${qCount} pesan antrean dibersihkan)` : ''}`, 
+          ephemeral: true 
+        });
         return;
       }
-      if (activeRunner) activeRunner.abort('user');
-      const queueCount = messageQueue.length;
-      messageQueue.length = 0;
+
+      // Jika tidak ada runner sama sekali
+      if (activeRunners.size === 0) {
+        await interaction.reply({ content: 'ℹ️ Tidak ada proses Claude yang sedang berjalan saat ini.', ephemeral: true });
+        return;
+      }
+
+      // Jika ada runner aktif (stop semua)
+      const count = activeRunners.size;
+      for (const [, runner] of activeRunners) {
+        runner.abort('user');
+      }
+      activeRunners.clear();
+      sessionQueues.clear();
       pendingFollowups.clear();
-      const text = queueCount > 0
-        ? `⏹️ **[Stop]** Proses Claude dan ${queueCount} pesan dalam antrean berhasil dihentikan paksa.`
-        : '⏹️ **[Stop]** Proses Claude berhasil dihentikan paksa.';
-      await interaction.reply({ content: text, ephemeral: true });
+      await interaction.reply({ 
+        content: `⏹️ **[Stop All]** Berhasil menghentikan ${count} proses Claude yang sedang berjalan.`, 
+        ephemeral: true 
+      });
       return;
     }
 
-    // 9. /settings (2 Bubble Pengaturan - Ephemeral)
+    // 9. /sync (Sinkronisasi Kategori & Channel dengan Sesi PC)
+    if (commandName === 'sync') {
+      await interaction.deferReply({ ephemeral: true });
+      if (!interaction.guild) {
+        await interaction.editReply('❌ Perintah ini hanya bisa dijalankan di dalam server Discord.');
+        return;
+      }
+      const res = await syncChannelsWithSessions(interaction.guild);
+      await interaction.editReply(
+        `✅ **Sinkronisasi Selesai!**\n` +
+        `- Kategori: **${res.category.name}**\n` +
+        `- Channel Baru Dibuat: **${res.created}**\n` +
+        `- Channel Tersimpan: **${res.existing}**\n` +
+        `- Channel Usang Dihapus: **${res.deleted}**\n` +
+        `- Total Sesi Aktif: **${res.totalSessions}**`
+      );
+      return;
+    }
+
+    // 10. /settings (2 Bubble Pengaturan - Ephemeral)
     if (commandName === 'settings') {
       const coreCard = renderCoreSettingsCard(activeSession);
       const coreRows = buildCoreSettingsComponents(activeSession);
@@ -952,16 +1038,16 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-// --- QUEUE PROCESSOR & CLAUDE TURN EXECUTOR ---
-function checkAndProcessNextQueue() {
-  if (isCurrentAbortForSteer) {
-    isCurrentAbortForSteer = false;
+// --- QUEUE PROCESSOR & CLAUDE TURN EXECUTOR (MULTI-THREADED) ---
+async function checkAndProcessNextQueue(sessionId: string) {
+  if (steerFlags.get(sessionId)) {
     return;
   }
 
-  if (messageQueue.length === 0) return;
+  const queue = sessionQueues.get(sessionId);
+  if (!queue || queue.length === 0) return;
 
-  const nextItem = messageQueue.shift()!;
+  const nextItem = queue.shift()!;
   setTimeout(async () => {
     if (nextItem.interactiveMessage) {
       await nextItem.interactiveMessage.edit({
@@ -969,10 +1055,7 @@ function checkAndProcessNextQueue() {
         components: []
       }).catch(() => {});
     }
-    const currentSession = await ensureActiveSession();
-    if (currentSession) {
-      await executeClaudeTurn(nextItem.message, nextItem.rawText, currentSession, false);
-    }
+    await executeClaudeTurn(nextItem.message, nextItem.rawText, nextItem.activeSession, false);
   }, 700);
 }
 
@@ -987,8 +1070,8 @@ async function executeClaudeTurn(
 ) {
   const hasAttachments = message.attachments.size > 0;
 
-  // UI Setup: Siapkan pesan progress di Discord dengan Stop Button
-  const stopButtonId = `stop_${Date.now()}`;
+  // UI Setup: Siapkan pesan progress di Discord dengan Stop Button bertarget sesi spesifik
+  const stopButtonId = `stop_${activeSession.sessionId}`;
   const stopButton = new ButtonBuilder()
     .setCustomId(stopButtonId)
     .setLabel('⏹️ Stop / Batalkan')
@@ -1042,7 +1125,8 @@ async function executeClaudeTurn(
     runner.attachments(attachList);
   }
 
-  activeRunner = runner;
+  // Daftarkan runner aktif untuk sesi ini (Multi-Threading Map)
+  activeRunners.set(activeSession.sessionId, runner);
 
   // Fungsi pengiriman & update multi-bubble Discord (Anti-Potong Codeblock)
   const performDiscordUpdate = async (finished: boolean = false, mediaFiles?: DetectedMediaFile[]) => {
@@ -1282,7 +1366,7 @@ async function executeClaudeTurn(
     }
 
     isDone = true;
-    activeRunner = null;
+    activeRunners.delete(activeSession.sessionId);
 
     if (summary.text) {
       turnSources.push(summary.text);
@@ -1311,11 +1395,11 @@ async function executeClaudeTurn(
     const logDesc = rawText ? rawText.slice(0, 30) : `[${message.attachments.size} Lampiran]`;
     console.log(`\x1b[32m[Headless Done]\x1b[0m Tugas "${logDesc}" selesai dengan sukses!`);
 
-    checkAndProcessNextQueue();
+    await checkAndProcessNextQueue(activeSession.sessionId);
   });
 
-  runner.on('error', (err) => {
-    activeRunner = null;
+  runner.on('error', async (err) => {
+    activeRunners.delete(activeSession.sessionId);
     logDetail('Runner Error', err.message, '\x1b[1;31m');
     if (!isDone) {
       console.error('[Headless Execution Error]', err);
@@ -1323,12 +1407,12 @@ async function executeClaudeTurn(
       steps.push({ type: 'text', text: errMsg });
       triggerDiscordUpdate(true);
     }
-    checkAndProcessNextQueue();
+    await checkAndProcessNextQueue(activeSession.sessionId);
   });
 
   runner.on('aborted', async (reason: 'user' | 'timeout' = 'user') => {
     isDone = true;
-    activeRunner = null;
+    activeRunners.delete(activeSession.sessionId);
 
     if (reason === 'timeout') {
       const mins = Math.round(botSettings.timeoutMs / 60000);
@@ -1343,7 +1427,7 @@ async function executeClaudeTurn(
     }
 
     triggerDiscordUpdate(true);
-    checkAndProcessNextQueue();
+    await checkAndProcessNextQueue(activeSession.sessionId);
   });
 
   try {
@@ -1381,17 +1465,49 @@ client.on('messageCreate', async (message: Message) => {
 
   logDetail('Pesan Masuk', `${senderName} di ${channelName}: "${rawText || '(hanya lampiran)'}"${attachNames}`, '\x1b[1;35m');
 
-  // --- 3. DUKUNGAN COMMAND TEKS (PREFIX / ATAU !) ---
+  // --- 3. DUKUNGAN COMMAND TEKS & CHANNEL ISOLATION ---
   const isCommand = rawText.startsWith('/') || rawText.startsWith('!');
   const cmdParts = rawText.slice(1).split(/\s+/);
   const cmd = cmdParts[0].toLowerCase();
   const cmdArg = cmdParts.slice(1).join(' ').trim();
 
+  // ISOLASI KATEGORI CLAUDE REMOTE
+  let targetSessionForMessage: ClaudeSession | null = null;
+  if (message.guild) {
+    const parent = (message.channel as any).parent;
+    const isInsideClaudeCategory = parent && (
+      parent.name.toLowerCase() === DEFAULT_CATEGORY_NAME.toLowerCase() ||
+      parent.name.toLowerCase().includes('claude remote')
+    );
+
+    // Jika pesan dikirim di luar kategori Claude Remote:
+    if (!isInsideClaudeCategory) {
+      // Izinkan perintah admin tertentu
+      if (isCommand && (cmd === 'sync' || cmd === 'sync-channel' || cmd === 'settings' || cmd === 'setelan' || cmd === 'ping')) {
+        // Lanjutkan ke eksekusi command
+      } else {
+        // ISOLASI PENUH: Jangan respon atau proses apapun di luar kategori!
+        return;
+      }
+    } else {
+      // Channel berada di dalam kategori Claude Remote -> Ambil metadata SessionID dari topic
+      const topic = (message.channel as any).topic;
+      const channelSessionId = extractSessionIdFromTopic(topic);
+      if (channelSessionId) {
+        targetSessionForMessage = resolveClaudeSessionFromId(channelSessionId);
+        if (!targetSessionForMessage) {
+          await message.reply('⚠️ Sesi Claude untuk channel ini tidak ditemukan di PC (mungkin sudah dipindahkan atau dihapus).\nKetik `/sync` untuk memperbarui saluran.');
+          return;
+        }
+      }
+    }
+  }
+
   if (isCommand) {
     logDetail('Command Teks', `Menjalankan: /${cmd} ${cmdArg}`.trim(), '\x1b[33m');
   }
 
-  const activeSession = await ensureActiveSession();
+  const activeSession = targetSessionForMessage || await ensureActiveSession();
 
   if (isCommand) {
     if (cmd === 'ping') {
@@ -1399,6 +1515,25 @@ client.on('messageCreate', async (message: Message) => {
       const replyMsg = `🏓 Pong! Latency: **${pingMs}ms**`;
       logDetail('Bot Balasan', `🏓 Pong! Latency: ${pingMs}ms`, '\x1b[1;32m');
       await message.reply(replyMsg);
+      return;
+    }
+
+    if (cmd === 'sync' || cmd === 'sync-channel') {
+      if (!message.guild) {
+        await message.reply('❌ Perintah sinkronisasi hanya dapat dijalankan di dalam server Discord.');
+        return;
+      }
+      logDetail('Bot Balasan', 'Memulai sinkronisasi kategori & channel...', '\x1b[33m');
+      const waitMsg = await message.reply('🔄 Sedang melakukan sinkronisasi kategori & channel dengan sesi Claude di PC...');
+      const res = await syncChannelsWithSessions(message.guild);
+      await waitMsg.edit(
+        `✅ **Sinkronisasi Selesai!**\n` +
+        `- Kategori: **${res.category.name}**\n` +
+        `- Channel Baru Dibuat: **${res.created}**\n` +
+        `- Channel Tersimpan: **${res.existing}**\n` +
+        `- Channel Usang Dihapus: **${res.deleted}**\n` +
+        `- Total Sesi Aktif: **${res.totalSessions}**`
+      );
       return;
     }
 
@@ -1485,18 +1620,46 @@ client.on('messageCreate', async (message: Message) => {
     }
 
     if (cmd === 'stop' || cmd === 'abort' || cmd === 'cancel') {
-      if (!activeRunner && messageQueue.length === 0) {
+      const isStopAll = cmdArg.toLowerCase() === 'all' || cmdArg.toLowerCase() === 'semua';
+
+      // 1. Jika di channel spesifik dan bukan "stop all"
+      if (!isStopAll && targetSessionForMessage) {
+        const sId = targetSessionForMessage.sessionId;
+        const runner = activeRunners.get(sId);
+        const queue = sessionQueues.get(sId);
+        const queueCount = queue ? queue.length : 0;
+
+        if (!runner && queueCount === 0) {
+          logDetail('Bot Balasan', `Tidak ada proses Claude aktif di sesi "${targetSessionForMessage.name}".`, '\x1b[33m');
+          await message.reply('ℹ️ Tidak ada proses Claude yang sedang berjalan di sesi channel ini.');
+          return;
+        }
+
+        if (runner) runner.abort('user');
+        if (queue) queue.length = 0;
+        const text = queueCount > 0
+          ? `⏹️ **[Stop]** Proses Claude dan ${queueCount} pesan dalam antrean sesi ini berhasil dihentikan paksa.`
+          : '⏹️ **[Stop]** Proses Claude pada sesi ini berhasil dihentikan paksa.';
+        logDetail('Bot Balasan', text, '\x1b[1;31m');
+        await message.reply(text);
+        return;
+      }
+
+      // 2. Stop Global / All
+      if (activeRunners.size === 0) {
         logDetail('Bot Balasan', 'Tidak ada proses Claude yang sedang berjalan.', '\x1b[33m');
         await message.reply('ℹ️ Tidak ada proses Claude yang sedang berjalan saat ini.');
         return;
       }
-      if (activeRunner) activeRunner.abort('user');
-      const queueCount = messageQueue.length;
-      messageQueue.length = 0;
+
+      const count = activeRunners.size;
+      for (const [, runner] of activeRunners) {
+        runner.abort('user');
+      }
+      activeRunners.clear();
+      sessionQueues.clear();
       pendingFollowups.clear();
-      const text = queueCount > 0
-        ? `⏹️ **[Stop]** Proses Claude dan ${queueCount} pesan dalam antrean berhasil dihentikan paksa.`
-        : '⏹️ **[Stop]** Proses Claude berhasil dihentikan paksa.';
+      const text = `⏹️ **[Stop All]** Berhasil menghentikan paksa ${count} proses Claude yang sedang aktif.`;
       logDetail('Bot Balasan', text, '\x1b[1;31m');
       await message.reply(text);
       return;
@@ -1520,18 +1683,24 @@ client.on('messageCreate', async (message: Message) => {
     }
   }
 
-  // --- 4. EKSEKUSI PROMPT ATAU FOLLOW-UP KE HEADLESS CLAUDE RUNNER ---
+  // --- 4. EKSEKUSI PROMPT ATAU FOLLOW-UP KE HEADLESS RUNNER (MULTI-THREADED) ---
   if (!activeSession) {
     await message.reply('❌ Gagal terhubung ke Claude: Tidak ada sesi Claude yang ditemukan di PC.');
     return;
   }
 
-  // Jika Claude sedang memproses perintah sebelumnya (Follow-up Handlers)
-  if (activeRunner) {
+  // Cek apakah sesi ini sedang memproses perintah sebelumnya
+  const existingRunner = activeRunners.get(activeSession.sessionId);
+  if (existingRunner) {
     const followupMode = settingsManager.settings.followupMode || 'default';
 
     // 1. Mode Antre Otomatis (Queue)
     if (followupMode === 'queue') {
+      let queue = sessionQueues.get(activeSession.sessionId);
+      if (!queue) {
+        queue = [];
+        sessionQueues.set(activeSession.sessionId, queue);
+      }
       const queueItem: QueuedItem = {
         id: `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         message,
@@ -1539,7 +1708,7 @@ client.on('messageCreate', async (message: Message) => {
         activeSession,
         timestamp: Date.now()
       };
-      messageQueue.push(queueItem);
+      queue.push(queueItem);
 
       const steerBtn = new ButtonBuilder()
         .setCustomId(`queue_steer_${queueItem.id}`)
@@ -1554,21 +1723,22 @@ client.on('messageCreate', async (message: Message) => {
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(steerBtn, cancelBtn);
 
       const notice = await message.reply({
-        content: `📥 **[Antrean #${messageQueue.length}]** Instruksi dicatat ke antrean.\nAkan otomatis dijalankan begitu tugas aktif selesai.`,
+        content: `📥 **[Antrean #${queue.length}]** Instruksi dicatat ke antrean sesi ini.\nAkan otomatis dijalankan begitu tugas aktif selesai.`,
         components: [row]
       });
       queueItem.interactiveMessage = notice;
-      logDetail('Follow-up Queue', `Pesan masuk antrean #${messageQueue.length}: "${rawText.slice(0, 50)}"`, '\x1b[33m');
+      logDetail('Follow-up Queue', `Pesan masuk antrean sesi "${activeSession.name}" (#${queue.length}): "${rawText.slice(0, 50)}"`, '\x1b[33m');
       return;
     }
 
     // 2. Mode Kirim Sekarang (Interupsi Langsung / Steer)
     if (followupMode === 'steer') {
-      await message.reply('⚡ **[Interupsi]** Menghentikan proses sebelumnya & langsung menjalankan instruksi terbaru...');
-      logDetail('Follow-up Steer', `Menginterupsi proses aktif untuk: "${rawText.slice(0, 50)}"`, '\x1b[1;33m');
-      isCurrentAbortForSteer = true;
-      activeRunner.abort('user');
+      await message.reply('⚡ **[Interupsi]** Menghentikan proses sesi sebelumnya & langsung menjalankan instruksi terbaru...');
+      logDetail('Follow-up Steer', `Menginterupsi proses sesi "${activeSession.name}" untuk: "${rawText.slice(0, 50)}"`, '\x1b[1;33m');
+      steerFlags.set(activeSession.sessionId, true);
+      existingRunner.abort('user');
       setTimeout(async () => {
+        steerFlags.delete(activeSession.sessionId);
         await executeClaudeTurn(message, rawText, activeSession, true);
       }, 700);
       return;
@@ -1603,15 +1773,15 @@ client.on('messageCreate', async (message: Message) => {
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(queueBtn, steerBtn, cancelBtn);
 
     const choiceNotice = await message.reply({
-      content: `⏳ **Claude sedang memproses perintah sebelumnya.**\nApa yang ingin kamu lakukan dengan instruksi baru ini?`,
+      content: `⏳ **Sesi Claude ini sedang memproses perintah sebelumnya.**\nApa yang ingin kamu lakukan dengan instruksi baru ini?`,
       components: [row]
     });
     pendingItem.interactiveMessage = choiceNotice;
-    logDetail('Follow-up Prompt', `Menampilkan pilihan follow-up untuk: "${rawText.slice(0, 50)}"`, '\x1b[33m');
+    logDetail('Follow-up Prompt', `Menampilkan pilihan follow-up untuk sesi "${activeSession.name}": "${rawText.slice(0, 50)}"`, '\x1b[33m');
     return;
   }
 
-  // Jika idle, langsung jalankan turn normal
+  // Jika runner sesi ini sedang idle, langsung jalankan turn normal
   await executeClaudeTurn(message, rawText, activeSession, false);
 });
 
