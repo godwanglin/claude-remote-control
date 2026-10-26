@@ -10,6 +10,7 @@ import { buildStatusMessage, getSessionStatus } from './session-status.js';
 import { wrapRow } from './status-card.js';
 import { getAllProjectSessions, getCachedSessionsList, getSidebarProjectGroups, ProjectSessionItem } from './session-browser.js';
 import { ClaudeHeadless, ClaudePermissionMode } from './claude-headless.js';
+import { settingsManager, StoredSettings } from './settings-manager.js';
 
 const esc = '\u001b';
 const stripAnsi = (str: string) => str.replace(/\u001b\[[0-9;]*m/g, '');
@@ -42,19 +43,7 @@ export function makeBox(title: string, lines: (string | null)[], width: number =
   return ['```ansi', topLine, ...body, bottomLine, '```'].join('\n');
 }
 
-export interface BotSettings {
-  verbosity: 'detail' | 'compact';
-  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  timeoutMs: number;
-  notify: 'silent' | 'mention';
-}
-
-export const botSettings: BotSettings = {
-  verbosity: 'detail',
-  effort: 'xhigh',
-  timeoutMs: 300_000,
-  notify: 'silent'
-};
+export const botSettings = settingsManager.settings;
 
 export function renderCoreSettingsCard(currentSession: ClaudeSession | null): string {
   const activeModelId = currentSession ? getSessionModel(currentSession.sessionId) : 'claude-opus-5-5';
@@ -158,14 +147,14 @@ export const AVAILABLE_MODELS = [
   }
 ];
 
-// Mapping model aktif per session ID di memory
+// Mapping model aktif per session ID di memory & persistent settings.json
 export const sessionModelMap = new Map<string, string>();
 
 export function getSessionModel(sessionId?: string): string {
   if (sessionId && sessionModelMap.has(sessionId)) {
     return sessionModelMap.get(sessionId)!;
   }
-  return 'claude-opus-5-5';
+  return settingsManager.getSessionModel(sessionId);
 }
 
 export async function handleModel(currentSession: ClaudeSession | null, selectedModel?: string | null): Promise<string> {
@@ -195,6 +184,7 @@ export async function handleModel(currentSession: ClaudeSession | null, selected
 
     if (currentSession) {
       sessionModelMap.set(currentSession.sessionId, matched.id);
+      settingsManager.setSessionModel(currentSession.sessionId, matched.id);
 
       // Tulis model attachment ke file transkrip .jsonl agar Claude Desktop tersinkronisasi
       try {
@@ -329,7 +319,7 @@ export async function handleTeleport(targetArg: string): Promise<{ session: Clau
 /**
  * 5. /permission [mode]
  */
-export let currentPermissionMode: ClaudePermissionMode = 'bypassPermissions';
+export let currentPermissionMode: ClaudePermissionMode = settingsManager.settings.permissionMode || 'bypassPermissions';
 
 export const PERMISSION_MODES: { id: ClaudePermissionMode; index: number; name: string; desc: string }[] = [
   {
@@ -384,6 +374,7 @@ export function handlePermission(selectedMode?: string | null): string {
 
     if (matched) {
       currentPermissionMode = matched.id;
+      settingsManager.update('permissionMode', matched.id);
       const lines: (string | null)[] = [
         null,
         `${esc}[1;32m[OK] MODE PERIZINAN BERHASIL DIUBAH${esc}[0m`,

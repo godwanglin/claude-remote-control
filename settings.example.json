@@ -1,0 +1,10 @@
+{
+  "verbosity": "detail",
+  "effort": "xhigh",
+  "timeoutMs": 300000,
+  "notify": "silent",
+  "permissionMode": "bypassPermissions",
+  "defaultModel": "claude-opus-5-5",
+  "sessionModels": {},
+  "isManualSessionLocked": false
+}

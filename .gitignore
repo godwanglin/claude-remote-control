@@ -4,6 +4,8 @@ node_modules/
 # Environment and credentials
 .env
 .env.local
+settings.json
+settings.local.json
 
 # Background daemon runtime & logs
 .daemon/

@@ -37,6 +37,7 @@ import {
   AVAILABLE_MODELS,
   PERMISSION_MODES
 } from './commands-handler.js';
+import { settingsManager } from './settings-manager.js';
 import { ClaudeHeadless, getHostCredentials } from './claude-headless.js';
 import { detectTurnMediaFiles, DetectedMediaFile } from './media-detector.js';
 
@@ -102,7 +103,7 @@ client.on('error', (err) => {
 });
 
 let currentTargetSession: ClaudeSession | null = null;
-let isManualSessionLocked = false;
+let isManualSessionLocked = settingsManager.settings.isManualSessionLocked;
 let activeRunner: ClaudeHeadless | null = null;
 
 function safeContent(text: string): string {
@@ -498,7 +499,25 @@ client.once('clientReady', async (c) => {
   }
 
   // Cari sesi aktif awal
-  currentTargetSession = await ensureActiveSession();
+  if (isManualSessionLocked && settingsManager.settings.manualSessionId) {
+    const { flatList } = getSidebarProjectGroups();
+    const matched = flatList.find(s => s.sessionId === settingsManager.settings.manualSessionId);
+    if (matched) {
+      currentTargetSession = {
+        pid: process.pid,
+        sessionId: matched.sessionId,
+        name: matched.title,
+        cwd: matched.folder,
+        status: 'idle',
+        messagingSocketPath: ''
+      };
+      console.log(`\x1b[36m[Settings]\x1b[0m Memulihkan sesi manual terkunci: "${currentTargetSession.name}" (${currentTargetSession.sessionId})`);
+    }
+  }
+
+  if (!currentTargetSession) {
+    currentTargetSession = await ensureActiveSession();
+  }
   if (currentTargetSession) {
     console.log(`\x1b[36m[Claude Target]\x1b[0m Terhubung ke sesi: "${currentTargetSession.name}" (${currentTargetSession.sessionId})`);
   } else {
@@ -534,6 +553,10 @@ client.on('interactionCreate', async (interaction) => {
       if (result.session) {
         currentTargetSession = result.session;
         isManualSessionLocked = !result.isAuto;
+        settingsManager.save({
+          isManualSessionLocked: !result.isAuto,
+          manualSessionId: result.isAuto ? undefined : result.session.sessionId
+        });
       }
 
       const activeSession = await ensureActiveSession();
@@ -578,6 +601,7 @@ client.on('interactionCreate', async (interaction) => {
     // 4. Gaya Tampilan Verbosity (/settings)
     if (customId === 'settings_verbosity') {
       botSettings.verbosity = selectedTarget as any;
+      settingsManager.update('verbosity', selectedTarget as any);
       await interaction.editReply({
         content: safeContent(renderSystemSettingsCard()),
         components: buildSystemSettingsComponents()
@@ -588,6 +612,7 @@ client.on('interactionCreate', async (interaction) => {
     // 5. Level Berpikir / Effort (/settings)
     if (customId === 'settings_effort') {
       botSettings.effort = selectedTarget as any;
+      settingsManager.update('effort', selectedTarget as any);
       await interaction.editReply({
         content: safeContent(renderSystemSettingsCard()),
         components: buildSystemSettingsComponents()
@@ -597,7 +622,9 @@ client.on('interactionCreate', async (interaction) => {
 
     // 6. Batas Waktu Timeout (/settings)
     if (customId === 'settings_timeout') {
-      botSettings.timeoutMs = parseInt(selectedTarget, 10);
+      const ms = parseInt(selectedTarget, 10);
+      botSettings.timeoutMs = ms;
+      settingsManager.update('timeoutMs', ms);
       await interaction.editReply({
         content: safeContent(renderSystemSettingsCard()),
         components: buildSystemSettingsComponents()
@@ -608,6 +635,7 @@ client.on('interactionCreate', async (interaction) => {
     // 7. Notifikasi Selesai (/settings)
     if (customId === 'settings_notify') {
       botSettings.notify = selectedTarget as any;
+      settingsManager.update('notify', selectedTarget as any);
       await interaction.editReply({
         content: safeContent(renderSystemSettingsCard()),
         components: buildSystemSettingsComponents()
@@ -626,10 +654,14 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       if (activeRunner) {
-        await interaction.deferUpdate();
+        if (!interaction.deferred && !interaction.replied) {
+          await interaction.deferUpdate().catch(() => {});
+        }
         activeRunner.abort('user');
       } else {
-        await interaction.reply({ content: 'ℹ️ Tidak ada proses Claude yang sedang berjalan.', ephemeral: true });
+        if (!interaction.deferred && !interaction.replied) {
+          await interaction.reply({ content: 'ℹ️ Tidak ada proses Claude yang sedang berjalan.', ephemeral: true }).catch(() => {});
+        }
       }
       return;
     }
@@ -686,6 +718,10 @@ client.on('interactionCreate', async (interaction) => {
       if (result.session) {
         currentTargetSession = result.session;
         isManualSessionLocked = !result.isAuto;
+        settingsManager.save({
+          isManualSessionLocked: !result.isAuto,
+          manualSessionId: result.isAuto ? undefined : result.session.sessionId
+        });
       }
       await interaction.editReply(safeContent(result.message));
       return;
@@ -856,6 +892,10 @@ client.on('messageCreate', async (message: Message) => {
       if (result.session) {
         currentTargetSession = result.session;
         isManualSessionLocked = !result.isAuto;
+        settingsManager.save({
+          isManualSessionLocked: !result.isAuto,
+          manualSessionId: result.isAuto ? undefined : result.session.sessionId
+        });
       }
       logDetail('Bot Balasan', result.message.replace(/```[a-z]*\n?/g, '').trim(), '\x1b[1;32m');
       await message.reply(safeContent(result.message));
@@ -995,22 +1035,6 @@ client.on('messageCreate', async (message: Message) => {
   }
 
   activeRunner = runner;
-
-  // Handler Tombol Stop
-  const collector = replyMessage.createMessageComponentCollector({
-    componentType: ComponentType.Button,
-    filter: (i) => i.customId === stopButtonId,
-    time: botSettings.timeoutMs > 0 ? botSettings.timeoutMs : 86_400_000
-  });
-
-  collector.on('collect', async (i) => {
-    if (i.user.id !== message.author.id) {
-      await i.reply({ content: '⛔ Hanya pengirim prompt yang dapat menghentikan proses.', ephemeral: true });
-      return;
-    }
-    await i.deferUpdate();
-    runner.abort('user');
-  });
 
   // Fungsi pengiriman & update multi-bubble Discord (Anti-Potong Codeblock)
   const performDiscordUpdate = async (finished: boolean = false, mediaFiles?: DetectedMediaFile[]) => {
@@ -1253,7 +1277,6 @@ client.on('messageCreate', async (message: Message) => {
 
     isDone = true;
     activeRunner = null;
-    collector.stop();
 
     if (summary.text) {
       turnSources.push(summary.text);
@@ -1285,7 +1308,6 @@ client.on('messageCreate', async (message: Message) => {
 
   runner.on('error', (err) => {
     activeRunner = null;
-    collector.stop();
     logDetail('Runner Error', err.message, '\x1b[1;31m');
     if (!isDone) {
       console.error('[Headless Execution Error]', err);
@@ -1298,7 +1320,6 @@ client.on('messageCreate', async (message: Message) => {
   runner.on('aborted', async (reason: 'user' | 'timeout' = 'user') => {
     isDone = true;
     activeRunner = null;
-    collector.stop();
 
     if (reason === 'timeout') {
       const mins = Math.round(botSettings.timeoutMs / 60000);
