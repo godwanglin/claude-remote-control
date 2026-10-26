@@ -241,3 +241,52 @@ export function resolveClaudeSessionFromId(sessionId: string): ClaudeSession | n
     messagingSocketPath: ''
   };
 }
+
+/**
+ * Menghapus seluruh text channel di dalam kategori Claude Remote (dan opsional kategorinya)
+ */
+export async function clearCategoryChannels(
+  guild: Guild,
+  categoryName = DEFAULT_CATEGORY_NAME,
+  deleteCategory = false
+): Promise<{ deletedChannels: number; categoryDeleted: boolean }> {
+  await guild.channels.fetch();
+  const category = guild.channels.cache.find(
+    c => c.type === ChannelType.GuildCategory && 
+         (c.name.toLowerCase() === categoryName.toLowerCase() || c.name.toLowerCase().includes('claude remote'))
+  ) as CategoryChannel | undefined;
+
+  if (!category) {
+    return { deletedChannels: 0, categoryDeleted: false };
+  }
+
+  const childChannels = guild.channels.cache.filter(
+    c => c.parentId === category.id && c.type === ChannelType.GuildText
+  ) as Collection<string, TextChannel>;
+
+  let count = 0;
+  for (const [, ch] of childChannels) {
+    try {
+      console.log(`\x1b[33m[Channel Clear]\x1b[0m Menghapus channel #${ch.name}...`);
+      await ch.delete('Dibersihkan via crc channel clear');
+      count++;
+      await new Promise(r => setTimeout(r, 250));
+    } catch (err: any) {
+      console.error(`[Channel Clear Error] Gagal menghapus #${ch.name}:`, err.message);
+    }
+  }
+
+  let catDeleted = false;
+  if (deleteCategory) {
+    try {
+      console.log(`\x1b[33m[Category Clear]\x1b[0m Menghapus kategori "${category.name}"...`);
+      await category.delete('Dibersihkan via crc channel clear');
+      catDeleted = true;
+    } catch (err: any) {
+      console.error(`[Category Clear Error] Gagal menghapus kategori:`, err.message);
+    }
+  }
+
+  return { deletedChannels: count, categoryDeleted: catDeleted };
+}
+

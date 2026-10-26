@@ -269,6 +269,11 @@ Bridge remote control untuk Anthropic Claude Desktop di Windows
   \x1b[1;32mcrc logs\x1b[0m [-f] [-v] [-c] [--open] Lihat log bot (-f: stream realtime, -v: detail, -c: hapus log, --open: Notepad)
   \x1b[1;32mcrc help\x1b[0m                Tampilkan panduan bantuan ini
 
+\x1b[1;33mMANAJEMEN KATEGORI & CHANNEL DISCORD:\x1b[0m
+  \x1b[1;32mcrc channel sync\x1b[0m            Sinkronisasi tab sesi Claude ke channel Discord (3 ch/dtk)
+  \x1b[1;32mcrc channel clear\x1b[0m           Hapus seluruh channel di dalam kategori "📁 Claude Remote"
+  \x1b[1;32mcrc channel clear --category\x1b[0m Hapus seluruh channel sekaligus kategorinya
+
 \x1b[1;33mPERINTAH KONTROL SESI CLAUDE:\x1b[0m
   \x1b[1;32m/sessions\x1b[0m               Tampilkan daftar tab & sesi proyek (sidebar Claude Desktop)
   \x1b[1;32m/status\x1b[0m                 Tampilkan status sesi aktif dan pemakaian token konteks
@@ -331,6 +336,54 @@ async function runBotForeground(options = {}) {
   process.on('SIGTERM', () => {
     child.kill('SIGTERM');
   });
+}
+
+/**
+ * Eksekusi manajemen channel Discord dari CLI
+ */
+async function runChannelCliCommand(action, options = {}) {
+  const { Client, GatewayIntentBits } = await import('discord.js');
+  const { config } = await import(distFile('config.js'));
+  const { 
+    syncChannelsWithSessions, 
+    clearCategoryChannels, 
+    DEFAULT_CATEGORY_NAME 
+  } = await import(distFile('channel-manager.js'));
+
+  const token = config.discordToken || process.env.DISCORD_TOKEN;
+  if (!token) {
+    console.error('\x1b[31m[Error]\x1b[0m DISCORD_TOKEN tidak ditemukan di file .env');
+    process.exit(1);
+  }
+
+  console.log(`\x1b[36m[CRC Channel]\x1b[0m Menghubungkan ke Discord API...`);
+  const client = new Client({
+    intents: [GatewayIntentBits.Guilds]
+  });
+
+  await new Promise((resolve, reject) => {
+    client.once('clientReady', resolve);
+    client.login(token).catch(reject);
+  });
+
+  try {
+    for (const [, guild] of client.guilds.cache) {
+      console.log(`\x1b[34m[Server: ${guild.name}]\x1b[0m Menjalankan perintah channel: \x1b[1;33m${action}\x1b[0m...`);
+
+      if (action === 'clear') {
+        const deleteCategory = options.category || options.all || false;
+        const res = await clearCategoryChannels(guild, DEFAULT_CATEGORY_NAME, deleteCategory);
+        console.log(`\x1b[32m✔ [Berhasil]\x1b[0m Berhasil menghapus ${res.deletedChannels} channel di dalam kategori "${DEFAULT_CATEGORY_NAME}".${res.categoryDeleted ? ' Kategori juga dihapus.' : ''}`);
+      } else if (action === 'sync') {
+        const res = await syncChannelsWithSessions(guild);
+        console.log(`\x1b[32m✔ [Berhasil]\x1b[0m Kategori: "${res.category.name}" | Channel Baru: ${res.created} | Tersimpan: ${res.existing} | Dihapus: ${res.deleted}`);
+      }
+    }
+  } catch (err) {
+    console.error(`\x1b[31m[Error]\x1b[0m Gagal memproses perintah channel ${action}:`, err.message);
+  } finally {
+    await client.destroy();
+  }
 }
 
 // --- HTTP REST API SERVER ---
@@ -510,6 +563,28 @@ async function main() {
   // restart
   if (command === 'restart') {
     await restartDaemon();
+    return;
+  }
+
+  // channel / channels (sync / clear)
+  if (command === 'channel' || command === 'channels') {
+    const subCmd = cleanArgs[1] ? cleanArgs[1].toLowerCase() : '';
+    if (subCmd === 'sync') {
+      await runChannelCliCommand('sync');
+      return;
+    }
+    if (subCmd === 'clear' || subCmd === 'clean' || subCmd === 'delete' || subCmd === 'reset') {
+      const deleteCat = args.includes('--category') || args.includes('-c') || args.includes('--all');
+      await runChannelCliCommand('clear', { category: deleteCat });
+      return;
+    }
+
+    console.log(`
+\x1b[1;33mPERINTAH MANAJEMEN CHANNEL DISCORD:\x1b[0m
+  \x1b[1;32mcrc channel sync\x1b[0m             Sinkronisasi tab sesi Claude ke channel Discord (3 ch/dtk)
+  \x1b[1;32mcrc channel clear\x1b[0m            Hapus semua channel di dalam kategori "📁 Claude Remote"
+  \x1b[1;32mcrc channel clear --category\x1b[0m Hapus semua channel sekaligus kategorinya
+`);
     return;
   }
 
