@@ -83,6 +83,13 @@ export function renderSystemSettingsCard(): string {
     : `${botSettings.timeoutMs / 60000} Menit`;
   const notifyLabel = botSettings.notify === 'mention' ? 'Mention (@User)' : 'Silent (Tanpa Tag)';
 
+  const followupMode = settingsManager.settings.followupMode || 'default';
+  const followupLabel = followupMode === 'queue'
+    ? 'Otomatis Antre (Queue)'
+    : followupMode === 'steer'
+    ? 'Kirim Sekarang (Interupsi)'
+    : 'Tanya Dulu (Default)';
+
   const lines: (string | null)[] = [
     null,
     `${esc}[1;32m> PREFERENSI SISTEM SAAT INI:${esc}[0m`,
@@ -90,6 +97,7 @@ export function renderSystemSettingsCard(): string {
     `  Effort   : ${esc}[1;33m${effortLabel}${esc}[0m`,
     `  Timeout  : ${esc}[1;36m${timeoutLabel}${esc}[0m`,
     `  Notif    : ${esc}[1;35m${notifyLabel}${esc}[0m`,
+    `  Followup : ${esc}[1;32m${followupLabel}${esc}[0m`,
     null,
     `${esc}[0;37mPilih dropdown di bawah untuk mengubah preferensi.${esc}[0m`,
     null

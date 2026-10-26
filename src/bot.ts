@@ -106,6 +106,20 @@ let currentTargetSession: ClaudeSession | null = null;
 let isManualSessionLocked = settingsManager.settings.isManualSessionLocked;
 let activeRunner: ClaudeHeadless | null = null;
 
+// Antrean pesan dan penampung follow-up interaktif
+interface QueuedItem {
+  id: string;
+  message: Message;
+  rawText: string;
+  activeSession: ClaudeSession;
+  timestamp: number;
+  interactiveMessage?: Message;
+}
+
+const messageQueue: QueuedItem[] = [];
+const pendingFollowups = new Map<string, QueuedItem>();
+let isCurrentAbortForSteer = false;
+
 function safeContent(text: string): string {
   if (text.length <= 1950) return text;
   const cut = text.slice(0, 1920);
@@ -391,11 +405,38 @@ function buildSystemSettingsComponents(): ActionRowBuilder<StringSelectMenuBuild
       }
     ]);
 
+  // 5. Dropdown Mode Follow-up Pesan
+  const currentFollowup = settingsManager.settings.followupMode || 'default';
+  const followupSelect = new StringSelectMenuBuilder()
+    .setCustomId('settings_followup')
+    .setPlaceholder('Pilih Mode Follow-up Pesan...')
+    .addOptions([
+      {
+        label: 'Tanya Dulu (Default)',
+        description: 'Tampilkan tombol pilihan interaktif tiap ada pesan baru',
+        value: 'default',
+        default: currentFollowup === 'default'
+      },
+      {
+        label: 'Otomatis Antre',
+        description: 'Pesan baru otomatis masuk antrean & diproses berurutan',
+        value: 'queue',
+        default: currentFollowup === 'queue'
+      },
+      {
+        label: 'Kirim Sekarang (Interupsi)',
+        description: 'Stop proses sekarang & langsung jalankan pesan baru',
+        value: 'steer',
+        default: currentFollowup === 'steer'
+      }
+    ]);
+
   return [
     new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(verbositySelect),
     new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(effortSelect),
     new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(timeoutSelect),
-    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(notifySelect)
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(notifySelect),
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(followupSelect)
   ];
 }
 
@@ -643,16 +684,30 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // 8. Mode Follow-up Pesan (/settings)
+    if (customId === 'settings_followup') {
+      settingsManager.update('followupMode', selectedTarget as any);
+      await interaction.editReply({
+        content: safeContent(renderSystemSettingsCard()),
+        components: buildSystemSettingsComponents()
+      });
+      return;
+    }
+
     return;
   }
 
-  // Handler untuk Tombol Interaktif (misal Tombol Stop)
+  // Handler untuk Tombol Interaktif (misal Tombol Stop & Follow-up Action)
   if (interaction.isButton()) {
-    if (interaction.customId.startsWith('stop_')) {
-      if (config.ownerId && interaction.user.id !== config.ownerId) {
-        await interaction.reply({ content: '⛔ Akses ditolak. Bot ini terkunci khusus untuk Owner.', ephemeral: true });
-        return;
-      }
+    const { customId } = interaction;
+
+    if (config.ownerId && interaction.user.id !== config.ownerId) {
+      await interaction.reply({ content: '⛔ Akses ditolak. Bot ini terkunci khusus untuk Owner.', ephemeral: true });
+      return;
+    }
+
+    // 1. Tombol Stop / Batalkan Task Utama
+    if (customId.startsWith('stop_')) {
       if (activeRunner) {
         if (!interaction.deferred && !interaction.replied) {
           await interaction.deferUpdate().catch(() => {});
@@ -665,6 +720,90 @@ client.on('interactionCreate', async (interaction) => {
       }
       return;
     }
+
+    // 2. Tombol Pilihan Follow-up: Masukkan Antrean
+    if (customId.startsWith('fp_queue_')) {
+      const id = customId.replace('fp_queue_', '');
+      const item = pendingFollowups.get(id);
+      if (!item) {
+        await interaction.reply({ content: 'ℹ️ Pilihan ini sudah kadaluarsa atau sudah diproses.', ephemeral: true }).catch(() => {});
+        return;
+      }
+      pendingFollowups.delete(id);
+      messageQueue.push(item);
+
+      const steerBtn = new ButtonBuilder()
+        .setCustomId(`queue_steer_${item.id}`)
+        .setLabel('⚡ Kirim Sekarang')
+        .setStyle(ButtonStyle.Primary);
+
+      const cancelBtn = new ButtonBuilder()
+        .setCustomId(`queue_cancel_${item.id}`)
+        .setLabel('❌ Batalkan Antrean')
+        .setStyle(ButtonStyle.Secondary);
+
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(steerBtn, cancelBtn);
+
+      await interaction.update({
+        content: `📥 **[Antrean #${messageQueue.length}]** Instruksi dimasukkan ke antrean.\nAkan diproses otomatis begitu langkah aktif selesai.`,
+        components: [row]
+      }).catch(() => {});
+      return;
+    }
+
+    // 3. Tombol Pilihan Follow-up: Kirim Sekarang / Interupsi Langsung
+    if (customId.startsWith('fp_steer_') || customId.startsWith('queue_steer_')) {
+      const id = customId.startsWith('fp_steer_') ? customId.replace('fp_steer_', '') : customId.replace('queue_steer_', '');
+      let item = pendingFollowups.get(id);
+      if (item) {
+        pendingFollowups.delete(id);
+      } else {
+        const qIdx = messageQueue.findIndex(q => q.id === id);
+        if (qIdx !== -1) {
+          item = messageQueue.splice(qIdx, 1)[0];
+        }
+      }
+
+      if (!item) {
+        await interaction.reply({ content: 'ℹ️ Pilihan ini sudah kadaluarsa atau sudah diproses.', ephemeral: true }).catch(() => {});
+        return;
+      }
+
+      await interaction.update({
+        content: `⚡ **[Interupsi]** Menghentikan proses sebelumnya & langsung menjalankan instruksi ini...`,
+        components: []
+      }).catch(() => {});
+
+      if (activeRunner) {
+        isCurrentAbortForSteer = true;
+        activeRunner.abort('user');
+      }
+
+      setTimeout(async () => {
+        const currentSession = await ensureActiveSession();
+        if (currentSession) {
+          await executeClaudeTurn(item.message, item.rawText, currentSession, true);
+        }
+      }, 700);
+      return;
+    }
+
+    // 4. Tombol Batalkan Follow-up / Antrean
+    if (customId.startsWith('fp_cancel_') || customId.startsWith('queue_cancel_')) {
+      const id = customId.startsWith('fp_cancel_') ? customId.replace('fp_cancel_', '') : customId.replace('queue_cancel_', '');
+      pendingFollowups.delete(id);
+      const qIdx = messageQueue.findIndex(q => q.id === id);
+      if (qIdx !== -1) {
+        messageQueue.splice(qIdx, 1);
+      }
+
+      await interaction.update({
+        content: '❌ Instruksi dibatalkan.',
+        components: []
+      }).catch(() => {});
+      return;
+    }
+
     return;
   }
 
@@ -769,12 +908,18 @@ client.on('interactionCreate', async (interaction) => {
 
     // 8. /stop
     if (commandName === 'stop') {
-      if (!activeRunner) {
-        await interaction.reply({ content: 'ℹ️ Tidak ada proses Claude yang sedang berjalan saat ini.', ephemeral: true });
+      if (!activeRunner && messageQueue.length === 0) {
+        await interaction.reply({ content: 'ℹ️ Tidak ada proses Claude yang sedang berjalan atau mengantre.', ephemeral: true });
         return;
       }
-      activeRunner.abort();
-      await interaction.reply({ content: '⏹️ **[Stop]** Proses Claude berhasil dihentikan paksa.', ephemeral: true });
+      if (activeRunner) activeRunner.abort('user');
+      const queueCount = messageQueue.length;
+      messageQueue.length = 0;
+      pendingFollowups.clear();
+      const text = queueCount > 0
+        ? `⏹️ **[Stop]** Proses Claude dan ${queueCount} pesan dalam antrean berhasil dihentikan paksa.`
+        : '⏹️ **[Stop]** Proses Claude berhasil dihentikan paksa.';
+      await interaction.reply({ content: text, ephemeral: true });
       return;
     }
 
@@ -807,177 +952,40 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-// --- DISCORD MESSAGE EVENT HANDLER ---
-client.on('messageCreate', async (message: Message) => {
-  if (message.author.bot) return;
+// --- QUEUE PROCESSOR & CLAUDE TURN EXECUTOR ---
+function checkAndProcessNextQueue() {
+  if (isCurrentAbortForSteer) {
+    isCurrentAbortForSteer = false;
+    return;
+  }
 
-  const rawText = message.content.trim();
+  if (messageQueue.length === 0) return;
+
+  const nextItem = messageQueue.shift()!;
+  setTimeout(async () => {
+    if (nextItem.interactiveMessage) {
+      await nextItem.interactiveMessage.edit({
+        content: `▶️ **[Memproses Antrean]** Menjalankan instruksi: "${nextItem.rawText.slice(0, 80)}"`,
+        components: []
+      }).catch(() => {});
+    }
+    const currentSession = await ensureActiveSession();
+    if (currentSession) {
+      await executeClaudeTurn(nextItem.message, nextItem.rawText, currentSession, false);
+    }
+  }, 700);
+}
+
+/**
+ * Mengeksekusi satu turn perintah Claude secara headless dengan multi-bubble delivery
+ */
+async function executeClaudeTurn(
+  message: Message,
+  rawText: string,
+  activeSession: ClaudeSession,
+  isSteer: boolean = false
+) {
   const hasAttachments = message.attachments.size > 0;
-  if (!rawText && !hasAttachments) return;
-
-  // --- 1. AUTO-CLAIM OWNER ---
-  if (!config.ownerId) {
-    saveOwnerId(message.author.id);
-    await message.reply(`🔒 **[Security Alert]** Akun Anda (\`${message.author.tag}\` - ID: \`${message.author.id}\`) telah **didaftarkan sebagai OWNER TUNGGAL** bot ini!\nBot sekarang hanya akan merespons perintah dari Anda.`);
-    return;
-  }
-
-  // --- 2. SECURITY WHITELIST CHECK ---
-  if (message.author.id !== config.ownerId) {
-    return;
-  }
-
-  const senderName = `@${message.author.tag}`;
-  const channelName = (message.channel as any).name ? `#${(message.channel as any).name}` : 'Direct Message';
-  const attachNames = message.attachments.size > 0 
-    ? ` 📎 [${message.attachments.size} lampiran: ${message.attachments.map(a => a.name).join(', ')}]` 
-    : '';
-
-  logDetail('Pesan Masuk', `${senderName} di ${channelName}: "${rawText || '(hanya lampiran)'}"${attachNames}`, '\x1b[1;35m');
-
-  // --- 3. DUKUNGAN COMMAND TEKS (PREFIX / ATAU !) ---
-  const isCommand = rawText.startsWith('/') || rawText.startsWith('!');
-  const cmdParts = rawText.slice(1).split(/\s+/);
-  const cmd = cmdParts[0].toLowerCase();
-  const cmdArg = cmdParts.slice(1).join(' ').trim();
-
-  if (isCommand) {
-    logDetail('Command Teks', `Menjalankan: /${cmd} ${cmdArg}`.trim(), '\x1b[33m');
-  }
-
-  const activeSession = await ensureActiveSession();
-
-  if (isCommand) {
-    if (cmd === 'ping') {
-      const pingMs = client.ws.ping;
-      const replyMsg = `🏓 Pong! Latency: **${pingMs}ms**`;
-      logDetail('Bot Balasan', `🏓 Pong! Latency: ${pingMs}ms`, '\x1b[1;32m');
-      await message.reply(replyMsg);
-      return;
-    }
-
-    if (cmd === 'status') {
-      const card = handleStatus(activeSession);
-      logDetail('Bot Balasan', `Mengirim kartu status sesi (${activeSession?.name || '-'}) ke Discord`, '\x1b[1;32m');
-      await message.reply(safeContent(card));
-      return;
-    }
-
-    if (cmd === 'sessions' || cmd === 'sesi') {
-      const card = handleSessions(activeSession);
-      const dropdownRow = buildSessionsDropdown(activeSession);
-      logDetail('Bot Balasan', `Mengirim daftar sesi proyek ke Discord`, '\x1b[1;32m');
-      await message.reply({
-        content: safeContent(card),
-        components: dropdownRow ? [dropdownRow] : []
-      });
-      return;
-    }
-
-    if (cmd === 'model') {
-      const card = await handleModel(activeSession, cmdArg || null);
-      logDetail('Bot Balasan', `Model aktif: ${getSessionModel(activeSession?.sessionId)}`, '\x1b[1;32m');
-      await message.reply(safeContent(card));
-      return;
-    }
-
-    if (cmd === 'teleport' || cmd === 'switch') {
-      if (!cmdArg) {
-        const errReply = '❌ Harap masukkan nomor urut sesi (1-6), Session ID, atau "auto". Contoh: `/teleport 1` atau `/teleport auto`';
-        logDetail('Bot Balasan', errReply, '\x1b[31m');
-        await message.reply(errReply);
-        return;
-      }
-      const result = await handleTeleport(cmdArg);
-      if (result.session) {
-        currentTargetSession = result.session;
-        isManualSessionLocked = !result.isAuto;
-        settingsManager.save({
-          isManualSessionLocked: !result.isAuto,
-          manualSessionId: result.isAuto ? undefined : result.session.sessionId
-        });
-      }
-      logDetail('Bot Balasan', result.message.replace(/```[a-z]*\n?/g, '').trim(), '\x1b[1;32m');
-      await message.reply(safeContent(result.message));
-      return;
-    }
-
-    if (cmd === 'compact') {
-      logDetail('Bot Balasan', '⏳ Meringkas riwayat sesi (compacting)...', '\x1b[33m');
-      const waitMsg = await message.reply('⏳ Sedang meringkas riwayat sesi (compacting)...');
-      const result = await handleCompact(activeSession, cmdArg);
-      logDetail('Bot Balasan', result.message.replace(/```[a-z]*\n?/g, '').trim(), '\x1b[1;32m');
-      await waitMsg.edit(safeContent(result.message));
-      return;
-    }
-
-    if (cmd === 'permission' || cmd === 'izin') {
-      const card = handlePermission(cmdArg || null);
-      logDetail('Bot Balasan', `Mode izin: ${currentPermissionMode}`, '\x1b[1;32m');
-      await message.reply(safeContent(card));
-      return;
-    }
-
-    if (cmd === 'clear') {
-      logDetail('Bot Balasan', 'Membersihkan pesan Discord...', '\x1b[33m');
-      if (message.guild && message.channel && 'bulkDelete' in message.channel) {
-        try {
-          const fetched = await message.channel.messages.fetch({ limit: 100 });
-          const deletable = fetched.filter(m => (Date.now() - m.createdTimestamp) < 14 * 24 * 60 * 60 * 1000);
-          if (deletable.size > 0) {
-            await (message.channel as any).bulkDelete(deletable, true);
-          }
-          const notifyMsg = await (message.channel as any).send('🧹 Channel Discord telah dibersihkan. Memori Claude tetap aman!');
-          setTimeout(() => notifyMsg.delete().catch(() => {}), 5000);
-        } catch (err: any) {
-          await message.reply(`❌ Gagal membersihkan pesan: ${err.message}`);
-        }
-      } else {
-        await message.reply('ℹ️ Di DM, Discord tidak mengizinkan bot menghapus pesan pengguna.\nGunakan Channel Server untuk pembersihan layar.\n*(Catatan: Memori sesi Claude Anda tetap aman utuh).*');
-      }
-      return;
-    }
-
-    if (cmd === 'stop' || cmd === 'abort' || cmd === 'cancel') {
-      if (!activeRunner) {
-        logDetail('Bot Balasan', 'Tidak ada proses Claude yang sedang berjalan.', '\x1b[33m');
-        await message.reply('ℹ️ Tidak ada proses Claude yang sedang berjalan saat ini.');
-        return;
-      }
-      activeRunner.abort();
-      logDetail('Bot Balasan', 'Proses Claude berhasil dihentikan paksa (Stop).', '\x1b[1;31m');
-      await message.reply('⏹️ **[Stop]** Proses Claude berhasil dihentikan paksa.');
-      return;
-    }
-
-    if (cmd === 'settings' || cmd === 'setelan') {
-      const coreCard = renderCoreSettingsCard(activeSession);
-      const coreRows = buildCoreSettingsComponents(activeSession);
-      await message.reply({
-        content: safeContent(coreCard),
-        components: coreRows
-      });
-
-      const sysCard = renderSystemSettingsCard();
-      const sysRows = buildSystemSettingsComponents();
-      await (message.channel as any).send({
-        content: safeContent(sysCard),
-        components: sysRows
-      });
-      return;
-    }
-  }
-
-  // --- 4. EKSEKUSI PROMPT KE HEADLESS CLAUDE RUNNER ---
-  if (activeRunner) {
-    await message.reply('⏳ Claude sedang memproses perintah sebelumnya. Klik tombol **Stop** di pesan sebelumnya bila ingin membatalkan.');
-    return;
-  }
-
-  if (!activeSession) {
-    await message.reply('❌ Gagal terhubung ke Claude: Tidak ada sesi Claude yang ditemukan di PC.');
-    return;
-  }
 
   // UI Setup: Siapkan pesan progress di Discord dengan Stop Button
   const stopButtonId = `stop_${Date.now()}`;
@@ -989,7 +997,7 @@ client.on('messageCreate', async (message: Message) => {
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(stopButton);
 
   const initialMsg = new MessageBuilder()
-    .status('running', 'Menghubungkan ke sesi Claude & memproses...')
+    .status('running', isSteer ? '⚡ Mengalihkan instruksi & memproses...' : 'Menghubungkan ke sesi Claude & memproses...')
     .build();
 
   const replyMessage = await message.reply({
@@ -1001,7 +1009,7 @@ client.on('messageCreate', async (message: Message) => {
   const steps: StepRecord[] = [];
   const turnSources: string[] = [];
   let isDone = false;
-  let statusText = 'Claude sedang berpikir...';
+  let statusText = isSteer ? 'Mengalihkan ke instruksi baru...' : 'Claude sedang berpikir...';
   const bubbleMessages: Message[] = [replyMessage];
   const lastKnownBubbles: string[] = [''];
   let isUpdating = false;
@@ -1219,22 +1227,21 @@ client.on('messageCreate', async (message: Message) => {
       turnSources.push(res.output);
     }
 
-    const statusTag = res.isError ? '\x1b[31m[ERROR]\x1b[0m' : '\x1b[32m[OK]\x1b[0m';
-    const preview = (res.output || '').replace(/\s+/g, ' ').trim().slice(0, 140);
-    logDetail('Tool Result', `${statusTag} ${preview}${preview.length >= 140 ? '...' : ''}`, '\x1b[32m');
-
-    // Cari tool step terakhir yang belum punya output
-    for (let i = steps.length - 1; i >= 0; i--) {
-      if (steps[i].type === 'tool' && !steps[i].output) {
-        steps[i].output = res.output;
-        steps[i].isError = res.isError;
-        break;
-      }
+    const lastTool = [...steps].reverse().find(s => s.type === 'tool');
+    if (lastTool) {
+      lastTool.output = res.output || '';
+      lastTool.isError = res.isError;
     }
+
+    const shortOut = (res.output || '').replace(/\r?\n+/g, ' ').trim();
+    const statusColor = res.isError ? '\x1b[31m[ERROR]\x1b[0m' : '\x1b[32m[OK]\x1b[0m';
+    logDetail('Tool Result', `${statusColor} ${shortOut.slice(0, 120)}${shortOut.length > 120 ? '...' : ''}`, '\x1b[32m');
+
+    statusText = 'Menganalisis hasil tool...';
     triggerDiscordUpdate();
   });
 
-  runner.on('turn_end', (summary) => {
+  runner.on('turn_complete', (summary) => {
     if (isStreamingResponse) {
       process.stdout.write('\n');
       isStreamingResponse = false;
@@ -1257,7 +1264,6 @@ client.on('messageCreate', async (message: Message) => {
       process.stdout.write(chunk);
     }
 
-    // Tambah atau sambung step text terakhir
     const lastStep = steps[steps.length - 1];
     if (lastStep && lastStep.type === 'text') {
       lastStep.text = (lastStep.text || '') + chunk;
@@ -1304,6 +1310,8 @@ client.on('messageCreate', async (message: Message) => {
     }
     const logDesc = rawText ? rawText.slice(0, 30) : `[${message.attachments.size} Lampiran]`;
     console.log(`\x1b[32m[Headless Done]\x1b[0m Tugas "${logDesc}" selesai dengan sukses!`);
+
+    checkAndProcessNextQueue();
   });
 
   runner.on('error', (err) => {
@@ -1315,6 +1323,7 @@ client.on('messageCreate', async (message: Message) => {
       steps.push({ type: 'text', text: errMsg });
       triggerDiscordUpdate(true);
     }
+    checkAndProcessNextQueue();
   });
 
   runner.on('aborted', async (reason: 'user' | 'timeout' = 'user') => {
@@ -1334,6 +1343,7 @@ client.on('messageCreate', async (message: Message) => {
     }
 
     triggerDiscordUpdate(true);
+    checkAndProcessNextQueue();
   });
 
   try {
@@ -1341,6 +1351,268 @@ client.on('messageCreate', async (message: Message) => {
   } catch (_) {
     // Error sudah ditangani via event listener runner.on('error')
   }
+}
+
+// --- DISCORD MESSAGE EVENT HANDLER ---
+client.on('messageCreate', async (message: Message) => {
+  if (message.author.bot) return;
+
+  const rawText = message.content.trim();
+  const hasAttachments = message.attachments.size > 0;
+  if (!rawText && !hasAttachments) return;
+
+  // --- 1. AUTO-CLAIM OWNER ---
+  if (!config.ownerId) {
+    saveOwnerId(message.author.id);
+    await message.reply(`🔒 **[Security Alert]** Akun Anda (\`${message.author.tag}\` - ID: \`${message.author.id}\`) telah **didaftarkan sebagai OWNER TUNGGAL** bot ini!\nBot sekarang hanya akan merespons perintah dari Anda.`);
+    return;
+  }
+
+  // --- 2. SECURITY WHITELIST CHECK ---
+  if (message.author.id !== config.ownerId) {
+    return;
+  }
+
+  const senderName = `@${message.author.tag}`;
+  const channelName = (message.channel as any).name ? `#${(message.channel as any).name}` : 'Direct Message';
+  const attachNames = message.attachments.size > 0 
+    ? ` 📎 [${message.attachments.size} lampiran: ${message.attachments.map(a => a.name).join(', ')}]` 
+    : '';
+
+  logDetail('Pesan Masuk', `${senderName} di ${channelName}: "${rawText || '(hanya lampiran)'}"${attachNames}`, '\x1b[1;35m');
+
+  // --- 3. DUKUNGAN COMMAND TEKS (PREFIX / ATAU !) ---
+  const isCommand = rawText.startsWith('/') || rawText.startsWith('!');
+  const cmdParts = rawText.slice(1).split(/\s+/);
+  const cmd = cmdParts[0].toLowerCase();
+  const cmdArg = cmdParts.slice(1).join(' ').trim();
+
+  if (isCommand) {
+    logDetail('Command Teks', `Menjalankan: /${cmd} ${cmdArg}`.trim(), '\x1b[33m');
+  }
+
+  const activeSession = await ensureActiveSession();
+
+  if (isCommand) {
+    if (cmd === 'ping') {
+      const pingMs = client.ws.ping;
+      const replyMsg = `🏓 Pong! Latency: **${pingMs}ms**`;
+      logDetail('Bot Balasan', `🏓 Pong! Latency: ${pingMs}ms`, '\x1b[1;32m');
+      await message.reply(replyMsg);
+      return;
+    }
+
+    if (cmd === 'status') {
+      const card = handleStatus(activeSession);
+      logDetail('Bot Balasan', `Mengirim kartu status sesi (${activeSession?.name || '-'}) ke Discord`, '\x1b[1;32m');
+      await message.reply(safeContent(card));
+      return;
+    }
+
+    if (cmd === 'sessions' || cmd === 'sesi') {
+      const card = handleSessions(activeSession);
+      const dropdownRow = buildSessionsDropdown(activeSession);
+      logDetail('Bot Balasan', `Mengirim daftar sesi proyek ke Discord`, '\x1b[1;32m');
+      await message.reply({
+        content: safeContent(card),
+        components: dropdownRow ? [dropdownRow] : []
+      });
+      return;
+    }
+
+    if (cmd === 'model') {
+      const card = await handleModel(activeSession, cmdArg || null);
+      logDetail('Bot Balasan', `Model aktif: ${getSessionModel(activeSession?.sessionId)}`, '\x1b[1;32m');
+      await message.reply(safeContent(card));
+      return;
+    }
+
+    if (cmd === 'teleport' || cmd === 'switch') {
+      if (!cmdArg) {
+        const errReply = '❌ Harap masukkan nomor urut sesi (1-6), Session ID, atau "auto". Contoh: `/teleport 1` atau `/teleport auto`';
+        logDetail('Bot Balasan', errReply, '\x1b[31m');
+        await message.reply(errReply);
+        return;
+      }
+      const result = await handleTeleport(cmdArg);
+      if (result.session) {
+        currentTargetSession = result.session;
+        isManualSessionLocked = !result.isAuto;
+        settingsManager.save({
+          isManualSessionLocked: !result.isAuto,
+          manualSessionId: result.isAuto ? undefined : result.session.sessionId
+        });
+      }
+      logDetail('Bot Balasan', result.message.replace(/```[a-z]*\n?/g, '').trim(), '\x1b[1;32m');
+      await message.reply(safeContent(result.message));
+      return;
+    }
+
+    if (cmd === 'compact') {
+      logDetail('Bot Balasan', '⏳ Meringkas riwayat sesi (compacting)...', '\x1b[33m');
+      const waitMsg = await message.reply('⏳ Sedang meringkas riwayat sesi (compacting)...');
+      const result = await handleCompact(activeSession, cmdArg);
+      logDetail('Bot Balasan', result.message.replace(/```[a-z]*\n?/g, '').trim(), '\x1b[1;32m');
+      await waitMsg.edit(safeContent(result.message));
+      return;
+    }
+
+    if (cmd === 'permission' || cmd === 'izin') {
+      const card = handlePermission(cmdArg || null);
+      logDetail('Bot Balasan', `Mode izin: ${currentPermissionMode}`, '\x1b[1;32m');
+      await message.reply(safeContent(card));
+      return;
+    }
+
+    if (cmd === 'clear') {
+      logDetail('Bot Balasan', 'Membersihkan pesan Discord...', '\x1b[33m');
+      if (message.guild && message.channel && 'bulkDelete' in message.channel) {
+        try {
+          const fetched = await message.channel.messages.fetch({ limit: 100 });
+          const deletable = fetched.filter(m => (Date.now() - m.createdTimestamp) < 14 * 24 * 60 * 60 * 1000);
+          if (deletable.size > 0) {
+            await (message.channel as any).bulkDelete(deletable, true);
+          }
+          const notifyMsg = await (message.channel as any).send('🧹 Channel Discord telah dibersihkan. Memori Claude tetap aman!');
+          setTimeout(() => notifyMsg.delete().catch(() => {}), 5000);
+        } catch (err: any) {
+          await message.reply(`❌ Gagal membersihkan pesan: ${err.message}`);
+        }
+      } else {
+        await message.reply('ℹ️ Di DM, Discord tidak mengizinkan bot menghapus pesan pengguna.\nGunakan Channel Server untuk pembersihan layar.\n*(Catatan: Memori sesi Claude Anda tetap aman utuh).*');
+      }
+      return;
+    }
+
+    if (cmd === 'stop' || cmd === 'abort' || cmd === 'cancel') {
+      if (!activeRunner && messageQueue.length === 0) {
+        logDetail('Bot Balasan', 'Tidak ada proses Claude yang sedang berjalan.', '\x1b[33m');
+        await message.reply('ℹ️ Tidak ada proses Claude yang sedang berjalan saat ini.');
+        return;
+      }
+      if (activeRunner) activeRunner.abort('user');
+      const queueCount = messageQueue.length;
+      messageQueue.length = 0;
+      pendingFollowups.clear();
+      const text = queueCount > 0
+        ? `⏹️ **[Stop]** Proses Claude dan ${queueCount} pesan dalam antrean berhasil dihentikan paksa.`
+        : '⏹️ **[Stop]** Proses Claude berhasil dihentikan paksa.';
+      logDetail('Bot Balasan', text, '\x1b[1;31m');
+      await message.reply(text);
+      return;
+    }
+
+    if (cmd === 'settings' || cmd === 'setelan') {
+      const coreCard = renderCoreSettingsCard(activeSession);
+      const coreRows = buildCoreSettingsComponents(activeSession);
+      await message.reply({
+        content: safeContent(coreCard),
+        components: coreRows
+      });
+
+      const sysCard = renderSystemSettingsCard();
+      const sysRows = buildSystemSettingsComponents();
+      await (message.channel as any).send({
+        content: safeContent(sysCard),
+        components: sysRows
+      });
+      return;
+    }
+  }
+
+  // --- 4. EKSEKUSI PROMPT ATAU FOLLOW-UP KE HEADLESS CLAUDE RUNNER ---
+  if (!activeSession) {
+    await message.reply('❌ Gagal terhubung ke Claude: Tidak ada sesi Claude yang ditemukan di PC.');
+    return;
+  }
+
+  // Jika Claude sedang memproses perintah sebelumnya (Follow-up Handlers)
+  if (activeRunner) {
+    const followupMode = settingsManager.settings.followupMode || 'default';
+
+    // 1. Mode Antre Otomatis (Queue)
+    if (followupMode === 'queue') {
+      const queueItem: QueuedItem = {
+        id: `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        message,
+        rawText,
+        activeSession,
+        timestamp: Date.now()
+      };
+      messageQueue.push(queueItem);
+
+      const steerBtn = new ButtonBuilder()
+        .setCustomId(`queue_steer_${queueItem.id}`)
+        .setLabel('⚡ Kirim Sekarang')
+        .setStyle(ButtonStyle.Primary);
+
+      const cancelBtn = new ButtonBuilder()
+        .setCustomId(`queue_cancel_${queueItem.id}`)
+        .setLabel('❌ Batalkan Antrean')
+        .setStyle(ButtonStyle.Secondary);
+
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(steerBtn, cancelBtn);
+
+      const notice = await message.reply({
+        content: `📥 **[Antrean #${messageQueue.length}]** Instruksi dicatat ke antrean.\nAkan otomatis dijalankan begitu tugas aktif selesai.`,
+        components: [row]
+      });
+      queueItem.interactiveMessage = notice;
+      logDetail('Follow-up Queue', `Pesan masuk antrean #${messageQueue.length}: "${rawText.slice(0, 50)}"`, '\x1b[33m');
+      return;
+    }
+
+    // 2. Mode Kirim Sekarang (Interupsi Langsung / Steer)
+    if (followupMode === 'steer') {
+      await message.reply('⚡ **[Interupsi]** Menghentikan proses sebelumnya & langsung menjalankan instruksi terbaru...');
+      logDetail('Follow-up Steer', `Menginterupsi proses aktif untuk: "${rawText.slice(0, 50)}"`, '\x1b[1;33m');
+      isCurrentAbortForSteer = true;
+      activeRunner.abort('user');
+      setTimeout(async () => {
+        await executeClaudeTurn(message, rawText, activeSession, true);
+      }, 700);
+      return;
+    }
+
+    // 3. Mode Default: Tampilkan 3 Tombol Pilihan Interaktif
+    const pendingId = `fp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const pendingItem: QueuedItem = {
+      id: pendingId,
+      message,
+      rawText,
+      activeSession,
+      timestamp: Date.now()
+    };
+    pendingFollowups.set(pendingId, pendingItem);
+
+    const queueBtn = new ButtonBuilder()
+      .setCustomId(`fp_queue_${pendingId}`)
+      .setLabel('📥 Masukkan Antrean')
+      .setStyle(ButtonStyle.Primary);
+
+    const steerBtn = new ButtonBuilder()
+      .setCustomId(`fp_steer_${pendingId}`)
+      .setLabel('⚡ Kirim Sekarang')
+      .setStyle(ButtonStyle.Danger);
+
+    const cancelBtn = new ButtonBuilder()
+      .setCustomId(`fp_cancel_${pendingId}`)
+      .setLabel('❌ Batalkan')
+      .setStyle(ButtonStyle.Secondary);
+
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(queueBtn, steerBtn, cancelBtn);
+
+    const choiceNotice = await message.reply({
+      content: `⏳ **Claude sedang memproses perintah sebelumnya.**\nApa yang ingin kamu lakukan dengan instruksi baru ini?`,
+      components: [row]
+    });
+    pendingItem.interactiveMessage = choiceNotice;
+    logDetail('Follow-up Prompt', `Menampilkan pilihan follow-up untuk: "${rawText.slice(0, 50)}"`, '\x1b[33m');
+    return;
+  }
+
+  // Jika idle, langsung jalankan turn normal
+  await executeClaudeTurn(message, rawText, activeSession, false);
 });
 
 client.login(config.discordToken).catch(err => {

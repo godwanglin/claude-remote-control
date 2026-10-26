@@ -8,6 +8,8 @@ const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 const SETTINGS_FILE = path.resolve(projectRoot, 'settings.json');
 
+export type FollowupMode = 'default' | 'queue' | 'steer';
+
 export interface StoredSettings {
   verbosity: 'detail' | 'compact';
   effort: ClaudeEffortLevel;
@@ -18,6 +20,7 @@ export interface StoredSettings {
   sessionModels: Record<string, string>;
   isManualSessionLocked: boolean;
   manualSessionId?: string;
+  followupMode: FollowupMode;
 }
 
 const DEFAULT_SETTINGS: StoredSettings = {
@@ -29,7 +32,8 @@ const DEFAULT_SETTINGS: StoredSettings = {
   defaultModel: 'claude-opus-5-5',
   sessionModels: {},
   isManualSessionLocked: false,
-  manualSessionId: undefined
+  manualSessionId: undefined,
+  followupMode: 'default'
 };
 
 class SettingsManager {
