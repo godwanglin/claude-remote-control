@@ -97,6 +97,8 @@ const {
   printTokenMissingCard
 } = await import(distFile('tui-wizard.js'));
 
+const { settingsManager } = await import(distFile('settings-manager.js'));
+
 /**
  * Format string box dari commands-handler untuk terminal
  */
@@ -271,47 +273,73 @@ function printHelp() {
 Bridge remote control untuk Anthropic Claude Desktop di Windows
 
 \x1b[1;33mPENGGUNAAN:\x1b[0m
-  crc <perintah> [opsi...]
+  crc <grup-perintah> [subperintah...] [opsi...]
 
-\x1b[1;33mINTERAKTIF & ONBOARDING:\x1b[0m
-  \x1b[1;32mcrc\x1b[0m                     Buka Dashboard TUI Interaktif (Menu kontrol & navigasi)
-  \x1b[1;32mcrc setup\x1b[0m               Jalankan Setup Wizard interaktif konfigurasi bot & token
-  \x1b[1;32mcrc discord <cmd>\x1b[0m        Kelola kredensial Discord (token, owner, status, invite)
+\x1b[1;33mDASHBOARD & WIZARD:\x1b[0m
+  \x1b[1;32mcrc\x1b[0m                         Buka Dashboard TUI Interaktif (Menu kontrol mewah)
+  \x1b[1;32mcrc setup\x1b[0m                   Jalankan Setup Wizard konfigurasi awal bot
 
-\x1b[1;33mMODE EKSEKUSI BOT:\x1b[0m
-  \x1b[1;32mcrc start [-v]\x1b[0m          Jalankan bot langsung di terminal (foreground)
-  \x1b[1;32mcrc -v, --verbose\x1b[0m       Jalankan bot di terminal dengan live detail log (pesan, tool use)
-  \x1b[1;32mcrc tray\x1b[0m                Jalankan bot di background dengan icon System Tray di taskbar
-  \x1b[1;32mcrc stop\x1b[0m                Matikan bot background / system tray yang sedang berjalan
-  \x1b[1;32mcrc restart\x1b[0m             Muat ulang background bot / system tray
-  \x1b[1;32mcrc status\x1b[0m              Cek status bot (PID, uptime) & kartu sesi Claude aktif
-  \x1b[1;32mcrc logs\x1b[0m [-f] [-v] [-c] [--open] Lihat log bot (-f: stream realtime, -v: detail, -c: hapus log, --open: Notepad)
-  \x1b[1;32mcrc help\x1b[0m                Tampilkan panduan bantuan ini
+\x1b[1;33mPERINTAH TERPUSAT (HUB COMMANDS):\x1b[0m
+  \x1b[1;32mcrc discord <cmd>\x1b[0m           Pusat Discord: channel sync, clear, token, owner, invite, status (-h)
+  \x1b[1;32mcrc service <cmd>\x1b[0m           Pusat Layanan: tray, start, daemon, stop, restart, status, logs (-h)
+  \x1b[1;32mcrc session <cmd>\x1b[0m           Pusat Sesi: list, status, switch, model, compact, clear, permission (-h)
+  \x1b[1;32mcrc settings <cmd>\x1b[0m          Pusat Setelan: show, set (model, effort, timeout, permission) (-h)
 
-\x1b[1;33mMANAJEMEN KATEGORI & CHANNEL DISCORD:\x1b[0m
-  \x1b[1;32mcrc channel sync\x1b[0m            Sinkronisasi tab sesi Claude ke kategori proyek Discord
-  \x1b[1;32mcrc channel clear\x1b[0m           Hapus seluruh text channel & kategori proyek yang dikelola CRC
+\x1b[1;33mEKSEKUSI CHAT & API:\x1b[0m
+  \x1b[1;32mcrc chat "<prompt>" [-v]\x1b[0m    Kirim prompt dan stream respon Claude real-time di terminal
+  \x1b[1;32mcrc api [port]\x1b[0m              Jalankan server REST API bridge lokal (default: 3300)
 
-\x1b[1;33mPERINTAH KONTROL SESI CLAUDE:\x1b[0m
-  \x1b[1;32m/sessions\x1b[0m               Tampilkan daftar tab & sesi proyek (sidebar Claude Desktop)
-  \x1b[1;32m/status\x1b[0m                 Tampilkan status sesi aktif dan pemakaian token konteks
-  \x1b[1;32m/model\x1b[0m [1|2]            Tampilkan atau ganti model (1: Opus 5.5, 2: Opus 4.6)
-  \x1b[1;32m/teleport\x1b[0m <no|id|auto>  Pindah kendali ke nomor sesi atau ikuti tab desktop aktif
-  \x1b[1;32m/compact\x1b[0m [catatan]      Ringkas riwayat obrolan sesi aktif untuk hemat token
-  \x1b[1;32m/clear\x1b[0m                  Reset riwayat memori chat pada sesi aktif
-  \x1b[1;32m/permission\x1b[0m [mode]      Lihat/ubah mode izin (bypass | auto | plan | acceptEdits | manual)
-  \x1b[1;32mchat\x1b[0m "<prompt>" [-v]    Kirim prompt ke Claude dan stream respons real-time di terminal
-  \x1b[1;32mapi\x1b[0m [port]             Jalankan server REST API lokal (default: 3300)
+\x1b[1;33mALIAS CEPAT (SHORTHANDS):\x1b[0m
+  crc start [-v]       ➜  crc service start [-v]
+  crc tray             ➜  crc service tray
+  crc stop             ➜  crc service stop
+  crc restart          ➜  crc service restart
+  crc logs [-f] [-v]   ➜  crc service logs [-f] [-v]
+  crc channel sync     ➜  crc discord channel sync
+  crc channel clear    ➜  crc discord channel clear
+  /sessions            ➜  crc session list
+  /status              ➜  crc session status
+  /model [id]          ➜  crc session model [id]
+  /teleport <id|auto>  ➜  crc session switch <id|auto>
+  /compact [catatan]   ➜  crc session compact [catatan]
+  /clear               ➜  crc session clear
+  /permission [mode]   ➜  crc session permission [mode]
+
+Jalankan \x1b[1;33mcrc <grup> -h\x1b[0m (misal: \x1b[1;32mcrc discord -h\x1b[0m) untuk bantuan spesifik setiap grup perintah.
+`);
+}
+
+/**
+ * Bantuan lengkap perintah crc discord
+ */
+function printDiscordHelp() {
+  console.log(`
+\x1b[1;36mPANDUAN LENGKAP: crc discord <perintah> [opsi...]\x1b[0m
+Pusat kendali integrasi, bot, kredensial, dan channel Discord secara terpusat.
+
+\x1b[1;33mMANAJEMEN KATEGORI & CHANNEL:\x1b[0m
+  \x1b[1;32mcrc discord channel sync\x1b[0m         Sinkronkan seluruh tab sesi proyek Claude ke kategori Discord (3 ch/dtk)
+  \x1b[1;32mcrc discord channel clear\x1b[0m        Hapus semua text channel & kategori proyek yang dikelola CRC
+  \x1b[1;32mcrc discord sync\x1b[0m                 Alias cepat untuk 'crc discord channel sync'
+  \x1b[1;32mcrc discord clear\x1b[0m                Alias cepat untuk 'crc discord channel clear'
+
+\x1b[1;33mKREDENSIAL & AKUN BOT:\x1b[0m
+  \x1b[1;32mcrc discord status\x1b[0m               Periksa status koneksi, nama bot, dan User ID owner
+  \x1b[1;32mcrc discord invite\x1b[0m               Dapatkan link invite bot OAuth2 dengan izin Administrator
+  \x1b[1;32mcrc discord token <BOT_TOKEN>\x1b[0m    Simpan & validasi Discord Bot Token ke runtime config
+  \x1b[1;32mcrc discord owner <USER_ID>\x1b[0m      Simpan & verifikasi User ID Owner
+  \x1b[1;32mcrc discord setup\x1b[0m                Buka wizard interaktif langkah-demi-langkah
+
+\x1b[1;33mOPSI:\x1b[0m
+  -h, --help                          Tampilkan panduan bantuan perintah Discord ini
 
 \x1b[1;33mCONTOH PENGGUNAAN:\x1b[0m
-  crc                     # Buka dashboard interaktif
-  crc setup               # Wizard setup token bot & owner ID
-  crc start -v            # Jalankan bot di terminal dengan live detail log
-  crc discord status      # Cek status akun bot & link invite
-  crc channel sync        # Sinkronkan sesi lokal ke kategori Discord
-  crc tray                # Jalankan di system tray taskbar (background)
-  crc logs -f -v          # Pantau log bot realtime dengan live detail
-  crc stop                # Matikan bot background
+  crc discord -h                      # Tampilkan panduan ini
+  crc discord channel sync            # Sinkronkan sesi lokal ke kategori Discord
+  crc discord channel clear           # Bersihkan channel & kategori CRC
+  crc discord status                  # Cek kesehatan koneksi bot & owner
+  crc discord invite                  # Tampilkan tautan invite server
+  crc discord token MTU0NTQ5...       # Setel bot token baru
 `);
 }
 
@@ -319,8 +347,49 @@ Bridge remote control untuk Anthropic Claude Desktop di Windows
  * Subcommand handler untuk 'crc discord <subcommand>'
  */
 async function handleDiscordCommand(subArgs) {
-  const subCmd = subArgs[0] ? subArgs[0].toLowerCase() : '';
-  const param = subArgs.slice(1).join(' ').trim();
+  if (subArgs.length === 0 || subArgs.includes('-h') || subArgs.includes('--help') || subArgs[0].toLowerCase() === 'help') {
+    printDiscordHelp();
+    return;
+  }
+
+  const subCmd = subArgs[0].toLowerCase();
+  const restArgs = subArgs.slice(1);
+  const param = restArgs.join(' ').trim();
+
+  // channel / channels subcommands
+  if (subCmd === 'channel' || subCmd === 'channels') {
+    const action = restArgs[0] ? restArgs[0].toLowerCase() : '';
+    if (action === 'sync') {
+      await runChannelCliCommand('sync');
+      return;
+    }
+    if (action === 'clear' || action === 'clean' || action === 'delete' || action === 'reset') {
+      const deleteCat = !restArgs.includes('--keep-category');
+      await runChannelCliCommand('clear', { category: deleteCat });
+      return;
+    }
+    if (action === '-h' || action === '--help' || action === 'help' || !action) {
+      console.log(`
+\x1b[1;36mPANDUAN PERINTAH: crc discord channel <aksi>\x1b[0m
+  \x1b[1;32mcrc discord channel sync\x1b[0m   Sinkronkan tab sesi Claude ke kategori proyek Discord
+  \x1b[1;32mcrc discord channel clear\x1b[0m  Hapus seluruh text channel & kategori proyek yang dikelola CRC
+`);
+      return;
+    }
+    console.log(`\x1b[31m[Error]\x1b[0m Aksi channel "${action}" tidak dikenal. Jalankan \x1b[1;33mcrc discord channel -h\x1b[0m`);
+    return;
+  }
+
+  // alias cepat: crc discord sync & crc discord clear
+  if (subCmd === 'sync') {
+    await runChannelCliCommand('sync');
+    return;
+  }
+  if (subCmd === 'clear' || subCmd === 'clean') {
+    const deleteCat = !restArgs.includes('--keep-category');
+    await runChannelCliCommand('clear', { category: deleteCat });
+    return;
+  }
 
   if (subCmd === 'setup' || subCmd === 'wizard') {
     await runSetupWizard();
@@ -380,7 +449,7 @@ async function handleDiscordCommand(subArgs) {
     return;
   }
 
-  if (subCmd === 'status' || !subCmd) {
+  if (subCmd === 'status') {
     const token = config.discordToken || process.env.DISCORD_TOKEN;
     console.log(`\n\x1b[1;36m=== STATUS KONEKSI DISCORD CRC ===\x1b[0m`);
     if (!token) {
@@ -400,13 +469,292 @@ async function handleDiscordCommand(subArgs) {
     return;
   }
 
-  console.log(`\n\x1b[1;33mPANDUAN PERINTAH CRC DISCORD:\x1b[0m
-  \x1b[1;32mcrc discord setup\x1b[0m          Buka setup wizard interaktif
-  \x1b[1;32mcrc discord token <TOKEN>\x1b[0m  Simpan & verifikasi Discord Bot Token
-  \x1b[1;32mcrc discord owner <USER_ID>\x1b[0m Simpan & verifikasi User ID Owner
-  \x1b[1;32mcrc discord invite\x1b[0m         Dapatkan link invite bot dengan izin admin
-  \x1b[1;32mcrc discord status\x1b[0m         Cek info akun bot dan status koneksi Discord
+  console.log(`\x1b[31m[Error]\x1b[0m Subperintah "crc discord ${subCmd}" tidak dikenal.`);
+  printDiscordHelp();
+}
+
+/**
+ * Bantuan lengkap perintah crc service
+ */
+function printServiceHelp() {
+  console.log(`
+\x1b[1;36mPANDUAN LENGKAP: crc service <perintah> [opsi...]\x1b[0m
+Pusat kontrol proses background bot, System Tray taskbar Windows, dan logging.
+
+\x1b[1;33mPERINTAH LAYANAN:\x1b[0m
+  \x1b[1;32mcrc service tray\x1b[0m                 Jalankan bot di System Tray taskbar Windows (Background)
+  \x1b[1;32mcrc service start [-v]\x1b[0m           Jalankan bot di terminal langsung (Foreground)
+  \x1b[1;32mcrc service daemon\x1b[0m               Jalankan bot di background tanpa icon taskbar (Headless)
+  \x1b[1;32mcrc service stop\x1b[0m                 Hentikan bot background / system tray yang sedang berjalan
+  \x1b[1;32mcrc service restart\x1b[0m              Muat ulang proses background bot
+  \x1b[1;32mcrc service status\x1b[0m               Cek status hidup bot (PID, uptime, mode eksekusi)
+  \x1b[1;32mcrc service logs [-f] [-v] [-c]\x1b[0m Pantau log bot realtime (-f: streaming, -v: detail, -c: bersihkan)
+
+\x1b[1;33mOPSI:\x1b[0m
+  -h, --help                          Tampilkan panduan bantuan layanan ini
+
+\x1b[1;33mCONTOH PENGGUNAAN:\x1b[0m
+  crc service -h                      # Tampilkan panduan ini
+  crc service tray                    # Jalankan di taskbar
+  crc service status                  # Cek apakah bot sedang aktif
+  crc service logs -f -v              # Live detail log di terminal
+  crc service stop                    # Matikan bot background
 `);
+}
+
+/**
+ * Subcommand handler untuk 'crc service <subcommand>'
+ */
+async function handleServiceCommand(subArgs, fullArgs = []) {
+  if (subArgs.length === 0 || subArgs.includes('-h') || subArgs.includes('--help') || subArgs[0].toLowerCase() === 'help') {
+    printServiceHelp();
+    return;
+  }
+
+  const subCmd = subArgs[0].toLowerCase();
+  const token = config.discordToken || process.env.DISCORD_TOKEN;
+
+  if (subCmd === 'tray') {
+    if (!token) { printTokenMissingCard(); return; }
+    await startDaemon('tray');
+    return;
+  }
+  if (subCmd === 'daemon' || subCmd === 'headless') {
+    if (!token) { printTokenMissingCard(); return; }
+    await startDaemon('headless');
+    return;
+  }
+  if (subCmd === 'start' || subCmd === 'run') {
+    if (!token) { printTokenMissingCard(); return; }
+    const isVerbose = fullArgs.includes('-v') || fullArgs.includes('--verbose') || fullArgs.includes('--detail') || fullArgs.includes('-d');
+    await runBotForeground({ verbose: isVerbose });
+    return;
+  }
+  if (subCmd === 'stop' || subCmd === 'kill') {
+    await stopDaemon();
+    return;
+  }
+  if (subCmd === 'restart') {
+    await restartDaemon();
+    return;
+  }
+  if (subCmd === 'status') {
+    const activeSession = resolveCurrentSession();
+    printDaemonStatus(activeSession?.name);
+    return;
+  }
+  if (subCmd === 'logs' || subCmd === 'log') {
+    const follow = fullArgs.includes('-f') || fullArgs.includes('--follow') || fullArgs.includes('--tail') || fullArgs.some(a => a === '-vf' || a === '-fv');
+    const verbose = fullArgs.includes('-v') || fullArgs.includes('--verbose') || fullArgs.includes('--detail') || fullArgs.includes('-d') || fullArgs.some(a => a === '-vf' || a === '-fv');
+    const open = fullArgs.includes('--open') || fullArgs.includes('-o');
+    const clear = fullArgs.includes('--clear') || fullArgs.includes('-c');
+    streamLogs({ follow, open, clear, verbose });
+    return;
+  }
+
+  console.log(`\x1b[31m[Error]\x1b[0m Subperintah "crc service ${subCmd}" tidak dikenal.`);
+  printServiceHelp();
+}
+
+/**
+ * Bantuan lengkap perintah crc session
+ */
+function printSessionHelp() {
+  console.log(`
+\x1b[1;36mPANDUAN LENGKAP: crc session <perintah> [opsi...]\x1b[0m
+Pusat kendali sesi Claude Desktop, context window, model AI, dan perizinan.
+
+\x1b[1;33mPERINTAH SESI:\x1b[0m
+  \x1b[1;32mcrc session list\x1b[0m                 Tampilkan seluruh tab & sesi proyek aktif di Claude Desktop
+  \x1b[1;32mcrc session status\x1b[0m               Lihat kartu status sesi aktif & pemakaian token konteks
+  \x1b[1;32mcrc session switch <no|id|auto>\x1b[0m   Pindah kendali sesi (nomor sesi, UUID, atau 'auto')
+  \x1b[1;32mcrc session model [1|2|id]\x1b[0m       Lihat atau ubah model AI untuk sesi aktif
+  \x1b[1;32mcrc session compact [catatan]\x1b[0m    Ringkas riwayat obrolan sesi aktif untuk menghemat token
+  \x1b[1;32mcrc session clear\x1b[0m                Reset memori percakapan sesi aktif
+  \x1b[1;32mcrc session permission [mode]\x1b[0m    Lihat atau ubah izin eksekusi tool (bypass, plan, dll)
+
+\x1b[1;33mOPSI:\x1b[0m
+  -h, --help                          Tampilkan panduan bantuan sesi ini
+
+\x1b[1;33mCONTOH PENGGUNAAN:\x1b[0m
+  crc session -h                      # Tampilkan panduan ini
+  crc session list                    # Daftar semua sesi
+  crc session status                  # Status sesi aktif
+  crc session switch auto             # Ikuti tab desktop aktif
+  crc session model 1                 # Ganti ke Opus 5.5
+  crc session compact                 # Ringkas konteks
+`);
+}
+
+/**
+ * Subcommand handler untuk 'crc session <subcommand>'
+ */
+async function handleSessionCommand(subArgs, isMarkdown = false, isJson = false) {
+  if (subArgs.length === 0 || subArgs.includes('-h') || subArgs.includes('--help') || subArgs[0].toLowerCase() === 'help') {
+    printSessionHelp();
+    return;
+  }
+
+  const subCmd = subArgs[0].toLowerCase();
+  const param = subArgs.slice(1).join(' ').trim();
+  const activeSession = resolveCurrentSession();
+
+  if (subCmd === 'list' || subCmd === 'sessions' || subCmd === 'all') {
+    if (isJson) {
+      const { flatList } = getSidebarProjectGroups();
+      console.log(JSON.stringify(flatList, null, 2));
+    } else {
+      console.log(formatForTerminal(handleSessions(activeSession), isMarkdown));
+    }
+    return;
+  }
+
+  if (subCmd === 'status') {
+    if (isJson) {
+      const st = activeSession ? getSessionStatus(activeSession) : null;
+      console.log(JSON.stringify({ session: activeSession, status: st }, null, 2));
+    } else {
+      if (activeSession) {
+        console.log(formatForTerminal(handleStatus(activeSession), isMarkdown));
+      } else {
+        console.log('\x1b[31m[Error]\x1b[0m Tidak ada sesi Claude aktif.');
+      }
+    }
+    return;
+  }
+
+  if (subCmd === 'switch' || subCmd === 'teleport' || subCmd === 'select') {
+    if (!param) {
+      console.log('Harap masukkan nomor sesi, ID, atau "auto". Contoh: crc session switch 1');
+      return;
+    }
+    const res = await handleTeleport(param);
+    console.log(formatForTerminal(res.message, isMarkdown));
+    return;
+  }
+
+  if (subCmd === 'model') {
+    const card = await handleModel(activeSession, param || null);
+    console.log(formatForTerminal(card, isMarkdown));
+    return;
+  }
+
+  if (subCmd === 'compact') {
+    console.log('\x1b[33m⏳ Meringkas konteks sesi di background...\x1b[0m');
+    const res = await handleCompact(activeSession, param);
+    console.log(formatForTerminal(res.message, isMarkdown));
+    return;
+  }
+
+  if (subCmd === 'clear' || subCmd === 'reset') {
+    const card = await handleClear(activeSession);
+    console.log(formatForTerminal(card, isMarkdown));
+    return;
+  }
+
+  if (subCmd === 'permission') {
+    const card = handlePermission(param || null);
+    console.log(formatForTerminal(card, isMarkdown));
+    return;
+  }
+
+  console.log(`\x1b[31m[Error]\x1b[0m Subperintah "crc session ${subCmd}" tidak dikenal.`);
+  printSessionHelp();
+}
+
+/**
+ * Bantuan lengkap perintah crc settings
+ */
+function printSettingsHelp() {
+  console.log(`
+\x1b[1;36mPANDUAN LENGKAP: crc settings <perintah> [opsi...]\x1b[0m
+Pemeriksaan dan konfigurasi setelan sistem AI & runtime CRC secara terpusat.
+
+\x1b[1;33mPERINTAH SETELAN:\x1b[0m
+  \x1b[1;32mcrc settings show\x1b[0m                Tampilkan ringkasan seluruh setelan AI saat ini
+  \x1b[1;32mcrc settings set <kunci> <nilai>\x1b[0m Ubah nilai setelan (model, effort, timeout, permission, verbosity)
+
+\x1b[1;33mKUNCI & NILAI YANG TERSEDIA:\x1b[0m
+  model       : claude-opus-5-5 | claude-opus-4-6 | claude-sonnet-4-6
+  effort      : low | medium | high | xhigh
+  timeout     : 0 (Infinity) | 300000 (5m) | 600000 (10m) | 1800000 (30m)
+  permission  : bypassPermissions | autoConfirm | plan | acceptEdits | manual
+  verbosity   : detail | compact
+  followup    : steer | default | queue
+
+\x1b[1;33mOPSI:\x1b[0m
+  -h, --help                          Tampilkan panduan bantuan setelan ini
+
+\x1b[1;33mCONTOH PENGGUNAAN:\x1b[0m
+  crc settings -h                     # Tampilkan panduan ini
+  crc settings show                   # Tampilkan setelan saat ini
+  crc settings set model claude-opus-5-5
+  crc settings set effort high
+  crc settings set timeout 0
+`);
+}
+
+/**
+ * Subcommand handler untuk 'crc settings <subcommand>'
+ */
+async function handleSettingsCommand(subArgs) {
+  if (subArgs.includes('-h') || subArgs.includes('--help') || (subArgs[0] && subArgs[0].toLowerCase() === 'help')) {
+    printSettingsHelp();
+    return;
+  }
+
+  const subCmd = subArgs[0] ? subArgs[0].toLowerCase() : 'show';
+
+  if (subCmd === 'show' || subCmd === 'list' || subArgs.length === 0) {
+    const cur = settingsManager.settings;
+    const timeoutDesc = cur.timeoutMs === 0 ? 'Infinity' : `${cur.timeoutMs / 60000}m`;
+    console.log(`
+\x1b[1;36m=== SETELAN SISTEM AI CRC ===\x1b[0m
+  Model Default : \x1b[1;33m${cur.defaultModel}\x1b[0m
+  Effort Level  : \x1b[1;36m${cur.effort}\x1b[0m
+  Timeout       : \x1b[1;35m${timeoutDesc}\x1b[0m
+  Follow-up Mode: \x1b[1;32m${cur.followupMode}\x1b[0m
+  Verbosity     : \x1b[1;37m${cur.verbosity}\x1b[0m
+  Mode Izin     : \x1b[1;34m${cur.permissionMode}\x1b[0m
+`);
+    return;
+  }
+
+  if (subCmd === 'set') {
+    const key = subArgs[1]?.toLowerCase();
+    const val = subArgs[2];
+    if (!key || val === undefined) {
+      console.log('\x1b[31m[Error]\x1b[0m Format salah. Contoh: crc settings set model claude-opus-5-5');
+      return;
+    }
+
+    if (key === 'model' || key === 'defaultmodel') {
+      settingsManager.update('defaultModel', val);
+      console.log(`\x1b[32m✔ [Berhasil]\x1b[0m Model default diubah ke: \x1b[1;33m${val}\x1b[0m`);
+    } else if (key === 'effort') {
+      settingsManager.update('effort', val);
+      console.log(`\x1b[32m✔ [Berhasil]\x1b[0m Effort level diubah ke: \x1b[1;36m${val}\x1b[0m`);
+    } else if (key === 'timeout' || key === 'timeoutms') {
+      const ms = parseInt(val, 10);
+      settingsManager.update('timeoutMs', isNaN(ms) ? 0 : ms);
+      console.log(`\x1b[32m✔ [Berhasil]\x1b[0m Timeout diubah ke: \x1b[1;35m${val}\x1b[0m`);
+    } else if (key === 'permission' || key === 'permissionmode') {
+      settingsManager.update('permissionMode', val);
+      console.log(`\x1b[32m✔ [Berhasil]\x1b[0m Mode izin diubah ke: \x1b[1;34m${val}\x1b[0m`);
+    } else if (key === 'verbosity') {
+      settingsManager.update('verbosity', val);
+      console.log(`\x1b[32m✔ [Berhasil]\x1b[0m Verbosity diubah ke: \x1b[1;37m${val}\x1b[0m`);
+    } else if (key === 'followup' || key === 'followupmode') {
+      settingsManager.update('followupMode', val);
+      console.log(`\x1b[32m✔ [Berhasil]\x1b[0m Follow-up mode diubah ke: \x1b[1;32m${val}\x1b[0m`);
+    } else {
+      console.log(`\x1b[31m[Error]\x1b[0m Kunci "${key}" tidak dikenali. Jalankan \x1b[1;33mcrc settings -h\x1b[0m`);
+    }
+    return;
+  }
+
+  console.log(`\x1b[31m[Error]\x1b[0m Subperintah "crc settings ${subCmd}" tidak dikenal.`);
+  printSettingsHelp();
 }
 
 /**
@@ -593,13 +941,19 @@ function startApiServer(port = 3300) {
 async function main() {
   const args = process.argv.slice(2);
 
-  // Jika tanpa argumen, default adalah menjalankan bot langsung di terminal (foreground)
+  // Jika tanpa argumen sama sekali: buka dashboard interaktif
   if (args.length === 0) {
-    await runBotForeground();
+    const token = config.discordToken || process.env.DISCORD_TOKEN;
+    if (!token) {
+      await runSetupWizard();
+    } else {
+      await runInteractiveDashboard();
+    }
     return;
   }
 
-  if (args.includes('-h') || args.includes('--help') || args[0].toLowerCase() === 'help') {
+  // Jika perintah bantuan global: crc -h, crc --help, crc help
+  if (args.length === 1 && (args[0] === '-h' || args[0] === '--help' || args[0].toLowerCase() === 'help')) {
     printHelp();
     return;
   }
@@ -664,83 +1018,39 @@ async function main() {
     return;
   }
 
-  // discord
+  // discord hub
   if (command === 'discord') {
     await handleDiscordCommand(cleanArgs.slice(1));
     return;
   }
 
-  // tray
-  if (command === 'tray') {
-    const token = config.discordToken || process.env.DISCORD_TOKEN;
-    if (!token) {
-      printTokenMissingCard();
-      return;
-    }
-    await startDaemon('tray');
+  // service hub
+  if (command === 'service') {
+    await handleServiceCommand(cleanArgs.slice(1), args);
     return;
   }
 
-  // start / run (interaktif di terminal)
-  if (command === 'start' || command === 'run') {
-    const token = config.discordToken || process.env.DISCORD_TOKEN;
-    if (!token) {
-      printTokenMissingCard();
-      return;
-    }
-    if (args.includes('--tray') || args.includes('-t')) {
-      await startDaemon('tray');
-      return;
-    }
-    if (args.includes('--daemon')) {
-      await startDaemon('headless');
-      return;
-    }
-    await runBotForeground({ verbose: hasVerbose });
+  // session hub
+  if (command === 'session') {
+    await handleSessionCommand(cleanArgs.slice(1), isMarkdown, isJson);
     return;
   }
 
-  // daemon (background tanpa tray)
-  if (command === 'daemon') {
-    const token = config.discordToken || process.env.DISCORD_TOKEN;
-    if (!token) {
-      printTokenMissingCard();
-      return;
-    }
-    await startDaemon('headless');
+  // settings hub
+  if (command === 'settings' || command === 'config' || command === 'setting') {
+    await handleSettingsCommand(cleanArgs.slice(1));
     return;
   }
 
-  // stop
-  if (command === 'stop' || command === 'kill') {
-    await stopDaemon();
-    return;
-  }
-
-  // restart
-  if (command === 'restart') {
-    await restartDaemon();
-    return;
-  }
-
-  // channel / channels (sync / clear)
+  // channel / channels (alias ke crc discord channel)
   if (command === 'channel' || command === 'channels') {
-    const subCmd = cleanArgs[1] ? cleanArgs[1].toLowerCase() : '';
-    if (subCmd === 'sync') {
-      await runChannelCliCommand('sync');
-      return;
-    }
-    if (subCmd === 'clear' || subCmd === 'clean' || subCmd === 'delete' || subCmd === 'reset') {
-      const deleteCat = args.includes('--category') || args.includes('-c') || args.includes('--all');
-      await runChannelCliCommand('clear', { category: deleteCat });
-      return;
-    }
+    await handleDiscordCommand(['channel', ...cleanArgs.slice(1)]);
+    return;
+  }
 
-    console.log(`
-\x1b[1;33mPERINTAH MANAJEMEN CHANNEL DISCORD:\x1b[0m
-  \x1b[1;32mcrc channel sync\x1b[0m             Sinkronisasi tab sesi Claude ke kategori proyek Discord (3 ch/dtk)
-  \x1b[1;32mcrc channel clear\x1b[0m            Hapus semua channel & kategori proyek yang dikelola CRC
-`);
+  // Shorthands untuk service (start, tray, daemon, stop, restart)
+  if (['tray', 'start', 'run', 'daemon', 'stop', 'kill', 'restart'].includes(command)) {
+    await handleServiceCommand([command, ...cleanArgs.slice(1)], args);
     return;
   }
 
