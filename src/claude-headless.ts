@@ -420,8 +420,10 @@ export class ClaudeHeadless extends EventEmitter {
           }
         });
 
+        let stderrBuffer = '';
         child.stderr?.on('data', (chunk: Buffer) => {
           const errStr = chunk.toString('utf8');
+          stderrBuffer += errStr;
           this.emit('stderr', errStr);
         });
 
@@ -457,7 +459,8 @@ export class ClaudeHeadless extends EventEmitter {
             this.emit('done', turnSummary);
             resolve(turnSummary);
           } else {
-            const err = new Error(`Claude process exited with code ${code}`);
+            const detail = stderrBuffer.trim() || lineBuffer.trim() || finalText.trim();
+            const err = new Error(detail ? `Claude process exited with code ${code}: ${detail}` : `Claude process exited with code ${code}`);
             this.emit('error', err);
             reject(err);
           }

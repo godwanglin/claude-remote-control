@@ -1410,7 +1410,10 @@ async function executeClaudeTurn(
     logDetail('Runner Error', err.message, '\x1b[1;31m');
     if (!isDone) {
       console.error('[Headless Execution Error]', err);
-      const errMsg = `❌ **[Error]** Gagal memproses perintah: ${err.message}`;
+      let errMsg = `❌ **[Error]** Gagal memproses perintah: ${err.message}`;
+      if (err.message && err.message.toLowerCase().includes('not logged in')) {
+        errMsg += `\n\n💡 **Solusi**: Claude Code CLI di PC kamu belum login. Silakan buka terminal (CMD/PowerShell) di PC dan ketik \`claude\` sekali untuk login, atau masukkan \`ANTHROPIC_API_KEY\` di file \`.env\`.`;
+      }
       steps.push({ type: 'text', text: errMsg });
       triggerDiscordUpdate(true);
     }
