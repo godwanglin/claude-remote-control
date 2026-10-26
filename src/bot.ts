@@ -46,6 +46,7 @@ import {
   resolveClaudeSessionFromChannel 
 } from './channel-manager.js';
 import { getChannelByChannelId, touchChannelActivity } from './channels-store.js';
+import { getRuntimePaths } from './runtime-paths.js';
 
 // Pastikan environment gateway Claude Desktop terinjeksi ke bot
 const hostCreds = getHostCredentials();
@@ -58,10 +59,8 @@ for (const [k, v] of Object.entries(hostCreds)) {
 // Redirect log bila berjalan di headless background daemon
 if (process.env.CRC_DAEMON_MODE === 'headless') {
   try {
-    const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-    const daemonDir = path.join(projectRoot, '.daemon');
-    if (!fs.existsSync(daemonDir)) fs.mkdirSync(daemonDir, { recursive: true });
-    const logFile = path.join(daemonDir, 'crc.log');
+    const rPaths = getRuntimePaths();
+    const logFile = rPaths.logFile;
     const logStream = fs.createWriteStream(logFile, { flags: 'a' });
     process.stdout.write = (chunk: any) => { logStream.write(chunk); return true; };
     process.stderr.write = (chunk: any) => { logStream.write(chunk); return true; };
