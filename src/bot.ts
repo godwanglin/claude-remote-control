@@ -67,9 +67,8 @@ if (process.env.CRC_DAEMON_MODE === 'headless') {
   } catch (_) {}
 }
 
-// Deteksi flag log detail (--verbose / -v / --detail) dari argumen CLI atau environment
+// Deteksi flag log detail (--verbose / --detail / -d) dari argumen CLI atau environment
 export const isVerboseLog = process.argv.includes('--verbose') || 
-                            process.argv.includes('-v') || 
                             process.argv.includes('--detail') || 
                             process.argv.includes('-d') || 
                             process.env.CRC_VERBOSE === '1';

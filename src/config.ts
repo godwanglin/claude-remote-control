@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import { getRuntimePaths, ensureRuntimeDirs, projectRoot } from './runtime-paths.js';
 
 const envPath = path.resolve(projectRoot, '.env');
-dotenv.config({ path: envPath });
+dotenv.config({ path: envPath, quiet: true });
 
 export interface AppConfig {
   discordToken: string;

@@ -31,6 +31,31 @@ const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 const distPath = path.join(projectRoot, 'dist');
 
+// Baca informasi versi dari package.json
+let APP_NAME = '@devnuby/crc';
+let APP_VERSION = '1.0.0';
+try {
+  const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf-8'));
+  APP_NAME = pkg.name || '@devnuby/crc';
+  APP_VERSION = pkg.version || '1.0.0';
+} catch (_) {}
+
+// Cek argumen versi sebelum load modul berat (Fast Path)
+const earlyArgs = process.argv.slice(2);
+const isEarlyVersion = earlyArgs.includes('--version') || 
+                       earlyArgs.includes('-V') || 
+                       earlyArgs[0] === '-v' ||
+                       (earlyArgs[0] && earlyArgs[0].toLowerCase() === 'version');
+
+if (isEarlyVersion) {
+  if (earlyArgs.includes('--json')) {
+    console.log(JSON.stringify({ name: APP_NAME, version: APP_VERSION }, null, 2));
+  } else {
+    console.log(`crc v${APP_VERSION}`);
+  }
+  process.exit(0);
+}
+
 // Pastikan dist sudah ter-compile
 if (!fs.existsSync(path.join(distPath, 'commands-handler.js'))) {
   console.log('\x1b[33m[CRC]\x1b[0m Mengompilasi TypeScript ke dist...');
@@ -426,6 +451,14 @@ async function executeChatStream(prompt, session = null, isVerbose = false) {
   }
 }
 
+function printVersion(json = false) {
+  if (json) {
+    console.log(JSON.stringify({ name: APP_NAME, version: APP_VERSION }, null, 2));
+  } else {
+    console.log(`crc v${APP_VERSION}`);
+  }
+}
+
 function printHelp() {
   console.log(`
 \x1b[1;36mCRC (Claude Remote Control) - Standalone CLI, Background Daemon & System Tray\x1b[0m
@@ -433,6 +466,10 @@ Bridge remote control untuk Anthropic Claude Desktop di Windows
 
 \x1b[1;33mPENGGUNAAN:\x1b[0m
   crc <grup-perintah> [subperintah...] [opsi...]
+
+\x1b[1;33mOPSI GLOBAL:\x1b[0m
+  -v, --version               Tampilkan versi CRC saat ini
+  -h, --help                  Tampilkan panduan bantuan ini
 
 \x1b[1;33mDASHBOARD & WIZARD:\x1b[0m
   \x1b[1;32mcrc\x1b[0m                         Buka Dashboard TUI Interaktif (Menu kontrol mewah)
@@ -445,24 +482,24 @@ Bridge remote control untuk Anthropic Claude Desktop di Windows
   \x1b[1;32mcrc settings <cmd>\x1b[0m          Pusat Setelan: show, set (model, effort, timeout, permission) (-h)
 
 \x1b[1;33mEKSEKUSI CHAT & API:\x1b[0m
-  \x1b[1;32mcrc chat "<prompt>" [-v]\x1b[0m    Kirim prompt dan stream respon Claude real-time di terminal
+  \x1b[1;32mcrc chat "<prompt>" [--verbose]\x1b[0m Kirim prompt dan stream respon Claude real-time di terminal
   \x1b[1;32mcrc api [port]\x1b[0m              Jalankan server REST API bridge lokal (default: 3300)
 
 \x1b[1;33mALIAS CEPAT (SHORTHANDS):\x1b[0m
-  crc start [-v]       ➜  crc service start [-v]
-  crc tray             ➜  crc service tray
-  crc stop             ➜  crc service stop
-  crc restart          ➜  crc service restart
-  crc logs [-f] [-v]   ➜  crc service logs [-f] [-v]
-  crc channel sync     ➜  crc discord channel sync
-  crc channel clear    ➜  crc discord channel clear
-  /sessions            ➜  crc session list
-  /status              ➜  crc session status
-  /model [id]          ➜  crc session model [id]
-  /teleport <id|auto>  ➜  crc session switch <id|auto>
-  /compact [catatan]   ➜  crc session compact [catatan]
-  /clear               ➜  crc session clear
-  /permission [mode]   ➜  crc session permission [mode]
+  crc start [--verbose]      ➜  crc service start [--verbose]
+  crc tray                   ➜  crc service tray
+  crc stop                   ➜  crc service stop
+  crc restart                ➜  crc service restart
+  crc logs [-f] [--verbose]  ➜  crc service logs [-f] [--verbose]
+  crc channel sync           ➜  crc discord channel sync
+  crc channel clear          ➜  crc discord channel clear
+  /sessions                  ➜  crc session list
+  /status                    ➜  crc session status
+  /model [id]                ➜  crc session model [id]
+  /teleport <id|auto>        ➜  crc session switch <id|auto>
+  /compact [catatan]         ➜  crc session compact [catatan]
+  /clear                     ➜  crc session clear
+  /permission [mode]         ➜  crc session permission [mode]
 
 Jalankan \x1b[1;33mcrc <grup> -h\x1b[0m (misal: \x1b[1;32mcrc discord -h\x1b[0m) untuk bantuan spesifik setiap grup perintah.
 `);
@@ -641,13 +678,13 @@ function printServiceHelp() {
 Pusat kontrol proses background bot, System Tray taskbar Windows, dan logging.
 
 \x1b[1;33mPERINTAH LAYANAN:\x1b[0m
-  \x1b[1;32mcrc service tray\x1b[0m                 Jalankan bot di System Tray taskbar Windows (Background)
-  \x1b[1;32mcrc service start [-v]\x1b[0m           Jalankan bot di terminal langsung (Foreground)
-  \x1b[1;32mcrc service daemon\x1b[0m               Jalankan bot di background tanpa icon taskbar (Headless)
-  \x1b[1;32mcrc service stop\x1b[0m                 Hentikan bot background / system tray yang sedang berjalan
-  \x1b[1;32mcrc service restart\x1b[0m              Muat ulang proses background bot
-  \x1b[1;32mcrc service status\x1b[0m               Cek status hidup bot (PID, uptime, mode eksekusi)
-  \x1b[1;32mcrc service logs [-f] [-v] [-c]\x1b[0m Pantau log bot realtime (-f: streaming, -v: detail, -c: bersihkan)
+  \x1b[1;32mcrc service tray\x1b[0m                        Jalankan bot di System Tray taskbar Windows (Background)
+  \x1b[1;32mcrc service start [--verbose]\x1b[0m           Jalankan bot di terminal langsung (Foreground)
+  \x1b[1;32mcrc service daemon\x1b[0m                      Jalankan bot di background tanpa icon taskbar (Headless)
+  \x1b[1;32mcrc service stop\x1b[0m                        Hentikan bot background / system tray yang sedang berjalan
+  \x1b[1;32mcrc service restart\x1b[0m                     Muat ulang proses background bot
+  \x1b[1;32mcrc service status\x1b[0m                      Cek status hidup bot (PID, uptime, mode eksekusi)
+  \x1b[1;32mcrc service logs [-f] [--verbose] [-c]\x1b[0m  Pantau log bot realtime (-f: streaming, --verbose: detail, -c: bersihkan)
 
 \x1b[1;33mOPSI:\x1b[0m
   -h, --help                          Tampilkan panduan bantuan layanan ini
@@ -656,7 +693,7 @@ Pusat kontrol proses background bot, System Tray taskbar Windows, dan logging.
   crc service -h                      # Tampilkan panduan ini
   crc service tray                    # Jalankan di taskbar
   crc service status                  # Cek apakah bot sedang aktif
-  crc service logs -f -v              # Live detail log di terminal
+  crc service logs -f --verbose       # Live detail log di terminal
   crc service stop                    # Matikan bot background
 `);
 }
@@ -685,7 +722,7 @@ async function handleServiceCommand(subArgs, fullArgs = []) {
   }
   if (subCmd === 'start' || subCmd === 'run') {
     if (!token) { printTokenMissingCard(); return; }
-    const isVerbose = fullArgs.includes('-v') || fullArgs.includes('--verbose') || fullArgs.includes('--detail') || fullArgs.includes('-d');
+    const isVerbose = fullArgs.includes('--verbose') || fullArgs.includes('--detail') || fullArgs.includes('-d');
     await runBotForeground({ verbose: isVerbose });
     return;
   }
@@ -703,8 +740,8 @@ async function handleServiceCommand(subArgs, fullArgs = []) {
     return;
   }
   if (subCmd === 'logs' || subCmd === 'log') {
-    const follow = fullArgs.includes('-f') || fullArgs.includes('--follow') || fullArgs.includes('--tail') || fullArgs.some(a => a === '-vf' || a === '-fv');
-    const verbose = fullArgs.includes('-v') || fullArgs.includes('--verbose') || fullArgs.includes('--detail') || fullArgs.includes('-d') || fullArgs.some(a => a === '-vf' || a === '-fv');
+    const follow = fullArgs.includes('-f') || fullArgs.includes('--follow') || fullArgs.includes('--tail');
+    const verbose = fullArgs.includes('--verbose') || fullArgs.includes('--detail') || fullArgs.includes('-d');
     const open = fullArgs.includes('--open') || fullArgs.includes('-o');
     const clear = fullArgs.includes('--clear') || fullArgs.includes('-c');
     streamLogs({ follow, open, clear, verbose });
@@ -1116,6 +1153,17 @@ async function main() {
     return;
   }
 
+  // Jika perintah cek versi: crc -v, crc -V, crc --version, crc version
+  const isVersion = args.includes('--version') || 
+                    args.includes('-V') || 
+                    args[0] === '-v' ||
+                    (args[0] && args[0].toLowerCase() === 'version');
+
+  if (isVersion) {
+    printVersion(args.includes('--json'));
+    return;
+  }
+
   // Jika perintah bantuan global: crc -h, crc --help, crc help
   if (args.length === 1 && (args[0] === '-h' || args[0] === '--help' || args[0].toLowerCase() === 'help')) {
     printHelp();
@@ -1124,33 +1172,27 @@ async function main() {
 
   const isJson = args.includes('--json');
   const isMarkdown = args.includes('--markdown');
-  const hasVerbose = args.includes('-v') || 
-                     args.includes('--verbose') || 
+  const hasVerbose = args.includes('--verbose') || 
                      args.includes('--detail') || 
-                     args.includes('-d') ||
-                     args.some(a => a === '-vf' || a === '-fv');
+                     args.includes('-d');
 
   const hasFollow = args.includes('-f') || 
                     args.includes('--follow') || 
-                    args.includes('--tail') ||
-                    args.some(a => a === '-vf' || a === '-fv');
+                    args.includes('--tail');
 
   // Bersihkan flag khusus dari daftar argumen
   const cleanArgs = args.filter(a => 
     a !== '--json' && 
     a !== '--markdown' && 
-    a !== '-v' && 
     a !== '--verbose' && 
     a !== '--detail' && 
     a !== '-d' &&
     a !== '-f' &&
     a !== '--follow' &&
-    a !== '--tail' &&
-    a !== '-vf' &&
-    a !== '-fv'
+    a !== '--tail'
   );
 
-  // Jika tanpa argumen atau hanya flag verbose (misal: crc, crc -v, crc --verbose, crc --detail)
+  // Jika tanpa argumen atau hanya flag verbose (misal: crc --verbose, crc --detail)
   if (cleanArgs.length === 0) {
     if (hasVerbose) {
       await runBotForeground({ verbose: true });
@@ -1223,14 +1265,11 @@ async function main() {
     const follow = hasFollow || 
                    args.includes('-f') || 
                    args.includes('--follow') || 
-                   args.includes('--tail') ||
-                   args.some(a => a === '-vf' || a === '-fv');
+                   args.includes('--tail');
     const verbose = hasVerbose || 
-                    args.includes('-v') || 
                     args.includes('--verbose') || 
                     args.includes('--detail') || 
-                    args.includes('-d') ||
-                    args.some(a => a === '-vf' || a === '-fv');
+                    args.includes('-d');
     const open = args.includes('--open') || args.includes('-o');
     const clear = args.includes('--clear') || 
                   args.includes('-c') || 

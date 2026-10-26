@@ -1,26 +1,50 @@
 {
-  "name": "claude-remote",
+  "name": "@devnuby/crc",
   "version": "1.0.0",
   "description": "Remote control client and Discord bot bridge for Claude Desktop / Claude Code",
   "type": "module",
-  "main": "src/bot.ts",
+  "main": "dist/bot.js",
   "bin": {
     "crc": "./bin/crc.js"
   },
+  "files": [
+    "dist",
+    "bin",
+    "assets",
+    "README.md",
+    ".env.example",
+    "settings.example.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/godwanglin/claude-remote-control.git"
+  },
+  "bugs": {
+    "url": "https://github.com/godwanglin/claude-remote-control/issues"
+  },
+  "homepage": "https://github.com/godwanglin/claude-remote-control#readme",
   "scripts": {
     "dev": "tsx watch src/bot.ts",
     "start": "tsx src/bot.ts",
     "build": "tsc",
+    "prepublishOnly": "npm run build",
     "crc": "node bin/crc.js",
     "tray": "node bin/crc.js tray"
   },
   "keywords": [
     "claude",
-    "remote",
+    "claude-desktop",
+    "claude-code",
+    "remote-control",
     "discord",
-    "bot"
+    "bot",
+    "cli",
+    "bridge"
   ],
-  "author": "",
+  "author": "devnuby",
   "license": "ISC",
   "dependencies": {
     "@clack/prompts": "^1.8.1",

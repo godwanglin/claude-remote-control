@@ -14,21 +14,30 @@
 - **Follow-up Message Handling (Queue & Steer)**: Menangani pesan susulan saat Claude sedang sibuk dengan 3 mode: *Tanya Dulu* (tombol interaktif), *Otomatis Antre* (queue), atau *Kirim Sekarang* (interupsi langsung).
 - **Windows System Tray**: Bisa berjalan diam-diam di background di taskbar Windows (`crc tray`) dengan menu kontrol klik kanan (Open Logs, Restart Bot, Exit).
 - **Auto-Pipeline Pengiriman Media**: File gambar (`.png`, `.jpg`, `.webp`) atau audio (`.mp3`, `.wav`) yang dihasilkan Claude otomatis dideteksi dan dilampirkan langsung ke Discord.
-- **Live Verbose Logging**: Pantau aktivitas realtime Discord bot, tool use, balasan teks Claude, dan pemakaian token via terminal (`crc logs -f -v`).
+- **Live Verbose Logging**: Pantau aktivitas realtime Discord bot, tool use, balasan teks Claude, dan pemakaian token via terminal (`crc logs -f --verbose`).
 - **Owner Security Whitelist & Auto-Claim**: Bot terkunci khusus untuk akun Discord Owner, dengan fitur *Auto-Claim* otomatis pada pesan pertama jika Owner ID belum disetel.
 
 ---
 
 ## 🚀 Panduan Instalasi & Penggunaan
 
-### 1. Kloning Repositori
+### Cara 1: Install Global via NPM (Direkomendasikan)
+```bash
+npm install -g @devnuby/crc
+```
+Setelah terpasang, perintah `crc` langsung dapat digunakan di terminal mana saja:
+```bash
+crc            # Buka Dashboard TUI interaktif & Setup Wizard
+crc tray       # Jalankan di background System Tray Windows
+crc -v         # Cek versi terpasang
+```
+
+---
+
+### Cara 2: Kloning Repositori & Jalankan dari Source
 ```bash
 git clone https://github.com/godwanglin/claude-remote-control.git
 cd claude-remote-control
-```
-
-### 2. Pasang Dependensi & Build
-```bash
 npm install
 npm run build
 ```
@@ -48,8 +57,8 @@ OWNER_ID=id_akun_discord_kamu   # (Opsional, otomatis di-claim saat pertama kali
 
 * **Mode Terminal Interaktif (Foreground)**:
   ```bash
-  npm run crc            # atau npx crc
-  npm run crc -- -v      # jalankan dengan live verbose logs
+  npm run crc                # Buka Dashboard TUI interaktif
+  npm run crc -- --verbose   # Jalankan dengan live verbose logs
   ```
 
 * **Mode Background / System Tray (Taskbar Windows)**:
@@ -63,21 +72,22 @@ OWNER_ID=id_akun_discord_kamu   # (Opsional, otomatis di-claim saat pertama kali
 
 | Perintah | Deskripsi |
 | :--- | :--- |
-| `crc` | Jalankan bot langsung di terminal (interaktif) |
-| `crc -v` | Jalankan bot di terminal dengan live detail log (pesan masuk, tool use) |
+| `crc` | Buka Dashboard TUI Interaktif (atau jalankan bot jika belum disetel) |
+| `crc -v`, `crc --version` | Tampilkan versi CRC saat ini |
+| `crc -h`, `crc --help` | Tampilkan panduan bantuan CLI terpusat |
+| `crc service start [--verbose]` | Jalankan bot langsung di terminal (foreground) |
 | `crc tray` | Jalankan bot di background dengan icon System Tray Windows |
 | `crc stop` | Matikan bot background / system tray yang sedang berjalan |
 | `crc restart` | Muat ulang background bot / system tray |
 | `crc status` | Cek status daemon bot (PID, uptime) & kartu sesi Claude aktif |
 | `crc logs -f` | Pantau log bot secara realtime (streaming) |
-| `crc logs -f -v` | Pantau log bot realtime dengan live detail verbose (tool use, respon Claude) |
+| `crc logs -f --verbose` | Pantau log bot realtime dengan live detail verbose (tool use, respon Claude) |
 | `crc logs -c` | Bersihkan isi file log (`.daemon/crc.log`) |
 | `crc logs --open` | Buka file log langsung di Notepad |
-| `crc channel sync` | Sinkronisasi tab sesi Claude ke channel Discord (3 channel / detik) |
-| `crc channel clear` | Hapus semua text channel di dalam kategori `📁 Claude Remote` |
-| `crc channel clear --category` | Hapus semua channel sekaligus kategorinya |
+| `crc discord channel sync` | Sinkronisasi tab sesi Claude ke channel Discord (3 channel / detik) |
+| `crc discord channel clear` | Hapus semua text channel di dalam kategori `📁 Claude Remote` |
 | `crc chat "<prompt>"` | Kirim prompt ke Claude dan stream respons real-time langsung di terminal |
-| `crc /sessions` | Tampilkan daftar sesi proyek aktif di terminal |
+| `crc session list` | Tampilkan daftar sesi proyek aktif di terminal (tabel rapi) |
 | `crc /teleport <id>` | Pindah kendali sesi aktif |
 | `crc api [port]` | Jalankan server REST API lokal (default: port 3300) |
 

@@ -111,7 +111,9 @@ class SettingsManager {
         }
 
         const timeoutDesc = this._settings.timeoutMs === 0 ? 'Infinity' : `${this._settings.timeoutMs / 60000}m`;
-        console.log(`\x1b[32m[Settings]\x1b[0m Memuat pengaturan dari settings.json: Tampilan=${this._settings.verbosity}, Effort=${this._settings.effort}, Timeout=${timeoutDesc}, Izin=${this._settings.permissionMode}`);
+        if (process.env.CRC_VERBOSE === '1' || process.argv.includes('--verbose')) {
+          console.log(`\x1b[32m[Settings]\x1b[0m Memuat pengaturan dari settings.json: Tampilan=${this._settings.verbosity}, Effort=${this._settings.effort}, Timeout=${timeoutDesc}, Izin=${this._settings.permissionMode}`);
+        }
       } else {
         this.save(); // Inisialisasi default settings.json
       }
