@@ -8,10 +8,12 @@
 ## 🌟 Fitur Utama
 
 - **100% Headless Native Runner (Anti-Timeout)**: Mengeksekusi giliran Claude Code secara deterministik dengan streaming NDJSON, bebas dari masalah socket timeout atau interactive TUI hang.
-- **Sinkronisasi 2-Arah Claude Desktop**: Sesi yang dijalankan lewat Discord atau CLI otomatis terupdate di sidebar Claude Desktop karena berbagi file riwayat sesi (`.jsonl`) yang sama.
+- **Discord Tabs (Category & Channel Per-Session Sync)**: Otomatis membuat kategori **`📁 Claude Remote`** di mana setiap channel mewakili satu tab/sesi Claude di PC. Mengobrol di channel tertentu otomatis terhubung ke sesi tersebut tanpa perlu ganti sesi manual!
+- **Multi-Threading Engine (Paralel Execution)**: Menjalankan child process OS Claude (`claude.exe`) terpisah untuk tiap sesi. Beberapa channel Discord dapat bekerja secara paralel dan streaming output bersamaan tanpa saling memblokir.
+- **Total Channel Isolation**: Bot hanya merespons pesan yang dikirim di dalam kategori **`📁 Claude Remote`**, menjaga channel server lainnya (seperti `#general`, dll.) tetap bersih dan privat.
+- **Follow-up Message Handling (Queue & Steer)**: Menangani pesan susulan saat Claude sedang sibuk dengan 3 mode: *Tanya Dulu* (tombol interaktif), *Otomatis Antre* (queue), atau *Kirim Sekarang* (interupsi langsung).
 - **Windows System Tray**: Bisa berjalan diam-diam di background di taskbar Windows (`crc tray`) dengan menu kontrol klik kanan (Open Logs, Restart Bot, Exit).
 - **Auto-Pipeline Pengiriman Media**: File gambar (`.png`, `.jpg`, `.webp`) atau audio (`.mp3`, `.wav`) yang dihasilkan Claude otomatis dideteksi dan dilampirkan langsung ke Discord.
-- **Multi-Session Teleportation**: Ganti kendali aktif ke sesi proyek mana saja secara instan lewat perintah `/teleport` atau dropdown `/sessions`.
 - **Live Verbose Logging**: Pantau aktivitas realtime Discord bot, tool use, balasan teks Claude, dan pemakaian token via terminal (`crc logs -f -v`).
 - **Owner Security Whitelist & Auto-Claim**: Bot terkunci khusus untuk akun Discord Owner, dengan fitur *Auto-Claim* otomatis pada pesan pertama jika Owner ID belum disetel.
 
@@ -71,9 +73,13 @@ OWNER_ID=id_akun_discord_kamu   # (Opsional, otomatis di-claim saat pertama kali
 | `crc logs -f -v` | Pantau log bot realtime dengan live detail verbose (tool use, respon Claude) |
 | `crc logs -c` | Bersihkan isi file log (`.daemon/crc.log`) |
 | `crc logs --open` | Buka file log langsung di Notepad |
+| `crc channel sync` | Sinkronisasi tab sesi Claude ke channel Discord (3 channel / detik) |
+| `crc channel clear` | Hapus semua text channel di dalam kategori `📁 Claude Remote` |
+| `crc channel clear --category` | Hapus semua channel sekaligus kategorinya |
 | `crc chat "<prompt>"` | Kirim prompt ke Claude dan stream respons real-time langsung di terminal |
 | `crc /sessions` | Tampilkan daftar sesi proyek aktif di terminal |
 | `crc /teleport <id>` | Pindah kendali sesi aktif |
+| `crc api [port]` | Jalankan server REST API lokal (default: port 3300) |
 
 ---
 
@@ -81,14 +87,17 @@ OWNER_ID=id_akun_discord_kamu   # (Opsional, otomatis di-claim saat pertama kali
 
 Dapat dipanggil via **Slash Command** (`/`) atau **Teks Biasa** (`!`/`/`):
 
-* `/sessions` - Tampilkan daftar sesi proyek Claude Desktop dengan dropdown menu interaktif untuk pindah sesi (*teleport*).
+* `/sync` (`!sync`) - Sinkronisasi kategori dan text channel Discord dengan sesi Claude di PC.
+* `/stop` (`!stop`) - Hentikan paksa proses Claude yang sedang berjalan (mendukung stop sesi channel aktif atau stop semua).
+* `/settings` (`!settings`) - Buka panel kontrol lengkap (Model, Izin, Verbosity, Effort Level, Timeout, Notifikasi, Mode Follow-up Pesan).
+* `/sessions` (`!sessions`) - Tampilkan daftar sesi proyek Claude Desktop dengan dropdown menu interaktif untuk pindah sesi (*teleport*).
 * `/teleport <no|id|auto>` - Pindah kendali bot ke nomor sesi atau ikuti tab desktop aktif secara otomatis.
-* `/status` - Tampilkan kartu status sesi aktif, model AI, dan persentase penggunaan context window.
+* `/status` (`!status`) - Tampilkan kartu status sesi aktif, model AI, dan persentase penggunaan context window.
 * `/model [1|2]` - Tampilkan atau ubah model AI sesi aktif (Opus 5.5 / Opus 4.6).
 * `/compact [catatan]` - Ringkas riwayat obrolan sesi aktif untuk menghemat context tokens.
 * `/clear` - Reset riwayat memori chat pada sesi aktif.
 * `/permission [mode]` - Ubah izin Claude (`bypassPermissions`, `auto`, `plan`, `acceptEdits`, `manual`).
-* `!ping` - Cek latency bot Discord.
+* `!ping` - Cek latency WebSocket bot Discord.
 
 ---
 
