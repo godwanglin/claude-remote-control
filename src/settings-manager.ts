@@ -310,10 +310,12 @@ class SettingsManager {
     const query = idOrIndex.trim().toLowerCase();
     let index = -1;
 
-    // Cek apakah query adalah nomor urut (1-based index)
-    const num = parseInt(query, 10);
-    if (!isNaN(num) && num >= 1 && num <= this._settings.models.length) {
-      index = num - 1;
+    // Cek apakah query adalah nomor urut murni (1-based index)
+    if (/^\d+$/.test(query)) {
+      const num = parseInt(query, 10);
+      if (num >= 1 && num <= this._settings.models.length) {
+        index = num - 1;
+      }
     } else {
       index = this._settings.models.findIndex(m => m.id.toLowerCase() === query || m.name.toLowerCase() === query);
     }
@@ -341,9 +343,9 @@ class SettingsManager {
     const query = idOrIndex.trim().toLowerCase();
     let target = models.find(m => m.id.toLowerCase() === query || m.name.toLowerCase() === query);
 
-    if (!target) {
+    if (!target && /^\d+$/.test(query)) {
       const num = parseInt(query, 10);
-      if (!isNaN(num) && num >= 1 && num <= models.length) {
+      if (num >= 1 && num <= models.length) {
         target = models[num - 1];
       }
     }

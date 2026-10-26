@@ -1,8 +1,9 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { ClaudeSession, getActiveSessions } from './ipc.js';
 
-const userHome = process.env.USERPROFILE || process.env.HOME || (process.platform === 'win32' ? 'C:/Users/aiden' : '/root');
+const userHome = process.env.USERPROFILE || process.env.HOME || os.homedir();
 const PROJECTS_DIR = path.join(userHome, '.claude', 'projects');
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -230,4 +231,71 @@ export function getSidebarProjectGroups(): { groups: ProjectSidebarGroup[]; flat
 export function getAllProjectSessions(): ProjectSessionItem[] {
   const { flatList } = getSidebarProjectGroups();
   return flatList;
+}
+
+/**
+ * Menghapus hanya satu sesi spesifik berdasarkan Session ID UUID
+ * Membersihkan: <sessionId>.jsonl, direktori sesi jika ada, dan session-env jika ada
+ */
+export function deleteSession(sessionId: string): { success: boolean; deletedFiles: string[]; session?: ProjectSessionItem; message: string } {
+  if (!sessionId || !sessionId.trim()) {
+    return { success: false, deletedFiles: [], message: 'Session ID tidak boleh kosong.' };
+  }
+
+  const { flatList } = getSidebarProjectGroups();
+  const session = flatList.find(s => s.sessionId.toLowerCase() === sessionId.trim().toLowerCase());
+  
+  const targetId = session ? session.sessionId : sessionId.trim();
+  const deletedFiles: string[] = [];
+
+  if (fs.existsSync(PROJECTS_DIR)) {
+    const projectEntries = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
+      .filter(d => d.isDirectory() && !d.name.startsWith('.'));
+
+    for (const pe of projectEntries) {
+      const pDir = path.join(PROJECTS_DIR, pe.name);
+      
+      // 1. Hapus file transkrip: <sessionId>.jsonl (hanya file sesi ini!)
+      const jsonlFile = path.join(pDir, `${targetId}.jsonl`);
+      if (fs.existsSync(jsonlFile)) {
+        try {
+          fs.unlinkSync(jsonlFile);
+          deletedFiles.push(jsonlFile);
+        } catch (_) {}
+      }
+
+      // 2. Hapus direktori metadata sesi jika ada
+      const sessionDir = path.join(pDir, targetId);
+      if (fs.existsSync(sessionDir)) {
+        try {
+          fs.rmSync(sessionDir, { recursive: true, force: true });
+          deletedFiles.push(sessionDir);
+        } catch (_) {}
+      }
+    }
+  }
+
+  // 3. Hapus cache environment sesi di ~/.claude/session-env/<sessionId>
+  const sessionEnvDir = path.join(userHome, '.claude', 'session-env', targetId);
+  if (fs.existsSync(sessionEnvDir)) {
+    try {
+      fs.rmSync(sessionEnvDir, { recursive: true, force: true });
+      deletedFiles.push(sessionEnvDir);
+    } catch (_) {}
+  }
+
+  // Bersihkan cache daftar sesi agar pemanggilan berikutnya langsung up to date
+  cachedSessionsList = [];
+  getSidebarProjectGroups();
+
+  if (deletedFiles.length === 0 && !session) {
+    return { success: false, deletedFiles: [], message: `Sesi "${sessionId}" tidak ditemukan di disk.` };
+  }
+
+  return {
+    success: true,
+    deletedFiles,
+    session,
+    message: `Sesi "${session?.title || targetId}" (${targetId}) berhasil dihapus.`
+  };
 }

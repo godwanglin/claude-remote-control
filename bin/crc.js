@@ -178,18 +178,20 @@ function resolveTargetSession(query = null) {
   if (query) {
     const q = query.trim().toLowerCase();
 
-    // 1. Nomor urut dari tabel (1..N)
-    const num = parseInt(q, 10);
-    if (!isNaN(num) && num >= 1 && num <= flatList.length) {
-      const match = flatList[num - 1];
-      return {
-        pid: process.pid,
-        sessionId: match.sessionId,
-        name: match.title,
-        cwd: match.folder,
-        status: 'idle',
-        messagingSocketPath: ''
-      };
+    // 1. Nomor urut dari tabel (1..N) - HARUS murni angka desimal
+    if (/^\d+$/.test(q)) {
+      const num = parseInt(q, 10);
+      if (num >= 1 && num <= flatList.length) {
+        const match = flatList[num - 1];
+        return {
+          pid: process.pid,
+          sessionId: match.sessionId,
+          name: match.title,
+          cwd: match.folder,
+          status: 'idle',
+          messagingSocketPath: ''
+        };
+      }
     }
 
     // 2. 4 digit kode channel (misal: ed67) atau UUID match
@@ -768,6 +770,7 @@ Pusat kendali sesi Claude Desktop, context window, model AI, dan perizinan.
   \x1b[1;32mcrc session permission [mode] [-s <id>]\x1b[0m Lihat atau ubah izin eksekusi tool untuk sesi target
   \x1b[1;32mcrc session compact [notes] [-s <id>]\x1b[0m Ringkas riwayat obrolan sesi target di background
   \x1b[1;32mcrc session clear [-s <id>]\x1b[0m          Reset memori percakapan sesi target
+  \x1b[1;32mcrc session rm <No|Kode|UUID>\x1b[0m       Hapus sesi spesifik dari disk (aman, hanya 1 sesi)
   \x1b[1;32mcrc session reset [-s <id>]\x1b[0m          Hapus override setelan sesi agar kembali mengikuti Global
 
 \x1b[1;33mFORMAT TARGET SESI (-s / --session / --session-id):\x1b[0m
@@ -807,6 +810,38 @@ async function handleSessionCommand(subArgs, isMarkdown = false, isJson = false)
       console.log(JSON.stringify(flatList, null, 2));
     } else {
       console.log(renderSessionsTable());
+    }
+    return;
+  }
+
+  // Hapus satu sesi spesifik berdasarkan No urut, 4 digit kode, atau Full UUID
+  if (subCmd === 'rm' || subCmd === 'delete' || subCmd === 'remove') {
+    const rmTarget = targetQuery || param;
+    if (!rmTarget) {
+      console.log('\x1b[31m[Error]\x1b[0m Harap tentukan sesi yang ingin dihapus. Contoh: \x1b[1;33mcrc session rm 1\x1b[0m atau \x1b[1;33mcrc session rm 2bdc\x1b[0m');
+      return;
+    }
+    const targetSession = resolveTargetSession(rmTarget);
+    if (!targetSession) {
+      console.error(`\x1b[31m[Error]\x1b[0m Sesi target "${rmTarget}" tidak ditemukan.\nJalankan \x1b[1;33mcrc session list\x1b[0m untuk melihat nomor urut atau kode sesi.`);
+      return;
+    }
+
+    const { deleteSession } = await import(distFile('session-browser.js'));
+    const { settingsManager } = await import(distFile('settings-manager.js'));
+
+    const res = deleteSession(targetSession.sessionId);
+    if (res.success) {
+      settingsManager.clearSessionSettings(targetSession.sessionId);
+      console.log(`\x1b[32m✔ [Berhasil]\x1b[0m Sesi \x1b[1m"${targetSession.name}"\x1b[0m (ID: \x1b[1;33m${targetSession.sessionId}\x1b[0m) berhasil dihapus dari disk!`);
+      if (res.deletedFiles.length > 0) {
+        console.log(`\x1b[90m📁 File terhapus:`);
+        res.deletedFiles.forEach(f => console.log(`   • ${f}`));
+        console.log(`\x1b[0m`);
+      }
+      console.log(`\x1b[1;33m💡 Tip:\x1b[0m Jalankan \x1b[1;32mcrc discord sync\x1b[0m untuk menghapus channel sesi ini dari Discord.`);
+    } else {
+      console.error(`\x1b[31m❌ [Gagal]\x1b[0m ${res.message}`);
     }
     return;
   }
