@@ -497,6 +497,7 @@ Bridge remote control untuk Anthropic Claude Desktop di Windows
   crc logs [-f] [--verbose]  ➜  crc service logs [-f] [--verbose]
   crc channel sync           ➜  crc discord channel sync
   crc channel clear          ➜  crc discord channel clear
+  crc rm <target...> [-y]    ➜  crc session rm <target...>
   /sessions                  ➜  crc session list
   /status                    ➜  crc session status
   /model [id]                ➜  crc session model [id]
@@ -820,14 +821,16 @@ async function handleSessionCommand(subArgs, isMarkdown = false, isJson = false)
     const rawTokens = cleanArgs.slice(1);
     if (targetQuery) rawTokens.unshift(targetQuery);
 
-    if (rawTokens.length === 0) {
-      console.log('\x1b[31m[Error]\x1b[0m Harap tentukan sesi yang ingin dihapus.\nContoh tunggal: \x1b[1;33mcrc session rm 1\x1b[0m atau \x1b[1;33mcrc session rm 2bdc\x1b[0m\nContoh batch  : \x1b[1;33mcrc session rm 26 17\x1b[0m atau \x1b[1;33mcrc session rm 1-5\x1b[0m');
+    const cleanTokens = rawTokens.filter(t => t !== '-y' && t !== '--yes');
+
+    if (cleanTokens.length === 0) {
+      console.log('\x1b[31m[Error]\x1b[0m Harap tentukan sesi yang ingin dihapus.\nContoh tunggal: \x1b[1;33mcrc session rm 1\x1b[0m atau \x1b[1;33mcrc rm 2bdc\x1b[0m\nContoh batch  : \x1b[1;33mcrc rm 26 17\x1b[0m atau \x1b[1;33mcrc rm 1-5\x1b[0m');
       return;
     }
 
     // Ekstrak token (mendukung pemisah spasi, koma, maupun rentang angka 1-5)
     const targets = [];
-    for (const token of rawTokens) {
+    for (const token of cleanTokens) {
       const parts = token.split(',').map(p => p.trim()).filter(Boolean);
       for (const p of parts) {
         const rangeMatch = p.match(/^(\d+)[-..](\d+)$/);
@@ -861,6 +864,37 @@ async function handleSessionCommand(subArgs, isMarkdown = false, isJson = false)
     if (resolvedMap.size === 0) {
       console.error(`\x1b[31m[Error]\x1b[0m Tidak ada sesi yang ditemukan untuk target: "${targets.join(', ')}".\nJalankan \x1b[1;33mcrc session list\x1b[0m untuk melihat nomor urut atau kode sesi.`);
       return;
+    }
+
+    // Konfirmasi interaktif via @clack/prompts (bisa dipilih dengan panah atas-bawah & Enter)
+    const skipConfirm = subArgs.includes('-y') || subArgs.includes('--yes') || isJson;
+    if (!skipConfirm) {
+      const p = await import('@clack/prompts');
+      p.intro('\x1b[1;31mKONFIRMASI PENGHAPUSAN SESI CLAUDE\x1b[0m');
+
+      const lines = [];
+      let idx = 1;
+      for (const [, { session }] of resolvedMap) {
+        const shortCode = session.sessionId.replace(/-/g, '').slice(-4);
+        lines.push(`\x1b[1;33m${idx}.\x1b[0m \x1b[1m"${session.name}"\x1b[0m\n   ID Sesi      : \x1b[36m${session.sessionId}\x1b[0m (Kode: \x1b[1;32m${shortCode}\x1b[0m)\n   Path Project : \x1b[34m${session.cwd}\x1b[0m`);
+        idx++;
+      }
+
+      p.note(lines.join('\n\n'), `Detail Sesi Target (${resolvedMap.size} Sesi)`);
+
+      const choice = await p.select({
+        message: `Yakin ingin menghapus ${resolvedMap.size} sesi di atas secara permanen?`,
+        options: [
+          { label: 'Y - Ya, hapus permanen dari disk', value: 'yes', hint: 'File .jsonl sesi akan dihapus dari disk' },
+          { label: 'N - Tidak, batalkan', value: 'no', hint: 'Kembali tanpa menghapus apapun' }
+        ],
+        initialValue: 'no'
+      });
+
+      if (p.isCancel(choice) || choice === 'no') {
+        p.cancel('Operasi dibatalkan. Tidak ada file sesi yang dihapus.');
+        return;
+      }
     }
 
     const { deleteSession } = await import(distFile('session-browser.js'));
@@ -1577,6 +1611,12 @@ async function main() {
   // channel / channels (alias ke crc discord channel)
   if (command === 'channel' || command === 'channels') {
     await handleDiscordCommand(['channel', ...cleanArgs.slice(1)]);
+    return;
+  }
+
+  // rm / delete / remove (alias ke crc session rm)
+  if (command === 'rm' || command === 'delete' || command === 'remove') {
+    await handleSessionCommand(['rm', ...cleanArgs.slice(1)], isMarkdown, isJson);
     return;
   }
 
