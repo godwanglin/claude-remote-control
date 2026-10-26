@@ -1248,7 +1248,7 @@ async function handleUpdateCommand(subArgs = []) {
   const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
   const updateSuccess = await new Promise((resolve) => {
-    const child = spawn(npmCmd, ['install', '-g', '@devnuby/crc@latest'], {
+    const child = spawn(`${npmCmd} install -g @devnuby/crc@latest`, {
       stdio: 'inherit',
       shell: true
     });
