@@ -771,7 +771,7 @@ Pusat kendali sesi Claude Desktop, context window, model AI, dan perizinan.
   \x1b[1;32mcrc session permission [mode] [-s <id>]\x1b[0m Lihat atau ubah izin eksekusi tool untuk sesi target
   \x1b[1;32mcrc session compact [notes] [-s <id>]\x1b[0m Ringkas riwayat obrolan sesi target di background
   \x1b[1;32mcrc session clear [-s <id>]\x1b[0m          Reset memori percakapan sesi target
-  \x1b[1;32mcrc session rm <No|Kode|UUID>\x1b[0m       Hapus sesi spesifik dari disk (aman, hanya 1 sesi)
+  \x1b[1;32mcrc session rm <target...>\x1b[0m          Hapus satu atau banyak sesi (batch: rm 26 17, rm 1-5, rm 2bdc ed67)
   \x1b[1;32mcrc session reset [-s <id>]\x1b[0m          Hapus override setelan sesi agar kembali mengikuti Global
 
 \x1b[1;33mFORMAT TARGET SESI (-s / --session / --session-id):\x1b[0m
@@ -815,35 +815,80 @@ async function handleSessionCommand(subArgs, isMarkdown = false, isJson = false)
     return;
   }
 
-  // Hapus satu sesi spesifik berdasarkan No urut, 4 digit kode, atau Full UUID
+  // Hapus satu atau banyak sesi sekaligus (Batch Delete: rm 26 17, rm 1-5, rm 2bdc ed67)
   if (subCmd === 'rm' || subCmd === 'delete' || subCmd === 'remove') {
-    const rmTarget = targetQuery || param;
-    if (!rmTarget) {
-      console.log('\x1b[31m[Error]\x1b[0m Harap tentukan sesi yang ingin dihapus. Contoh: \x1b[1;33mcrc session rm 1\x1b[0m atau \x1b[1;33mcrc session rm 2bdc\x1b[0m');
+    const rawTokens = cleanArgs.slice(1);
+    if (targetQuery) rawTokens.unshift(targetQuery);
+
+    if (rawTokens.length === 0) {
+      console.log('\x1b[31m[Error]\x1b[0m Harap tentukan sesi yang ingin dihapus.\nContoh tunggal: \x1b[1;33mcrc session rm 1\x1b[0m atau \x1b[1;33mcrc session rm 2bdc\x1b[0m\nContoh batch  : \x1b[1;33mcrc session rm 26 17\x1b[0m atau \x1b[1;33mcrc session rm 1-5\x1b[0m');
       return;
     }
-    const targetSession = resolveTargetSession(rmTarget);
-    if (!targetSession) {
-      console.error(`\x1b[31m[Error]\x1b[0m Sesi target "${rmTarget}" tidak ditemukan.\nJalankan \x1b[1;33mcrc session list\x1b[0m untuk melihat nomor urut atau kode sesi.`);
+
+    // Ekstrak token (mendukung pemisah spasi, koma, maupun rentang angka 1-5)
+    const targets = [];
+    for (const token of rawTokens) {
+      const parts = token.split(',').map(p => p.trim()).filter(Boolean);
+      for (const p of parts) {
+        const rangeMatch = p.match(/^(\d+)[-..](\d+)$/);
+        if (rangeMatch) {
+          const start = parseInt(rangeMatch[1], 10);
+          const end = parseInt(rangeMatch[2], 10);
+          if (start <= end && end - start <= 100) {
+            for (let n = start; n <= end; n++) {
+              targets.push(String(n));
+            }
+            continue;
+          }
+        }
+        targets.push(p);
+      }
+    }
+
+    // Pra-resolusi seluruh target ke UUID unik agar index tabel tidak bergeser saat eksekusi
+    const resolvedMap = new Map();
+    const notFoundTargets = [];
+
+    for (const t of targets) {
+      const s = resolveTargetSession(t);
+      if (s) {
+        resolvedMap.set(s.sessionId, { session: s, query: t });
+      } else {
+        notFoundTargets.push(t);
+      }
+    }
+
+    if (resolvedMap.size === 0) {
+      console.error(`\x1b[31m[Error]\x1b[0m Tidak ada sesi yang ditemukan untuk target: "${targets.join(', ')}".\nJalankan \x1b[1;33mcrc session list\x1b[0m untuk melihat nomor urut atau kode sesi.`);
       return;
     }
 
     const { deleteSession } = await import(distFile('session-browser.js'));
     const { settingsManager } = await import(distFile('settings-manager.js'));
 
-    const res = deleteSession(targetSession.sessionId);
-    if (res.success) {
-      settingsManager.clearSessionSettings(targetSession.sessionId);
-      console.log(`\x1b[32m✔ [Berhasil]\x1b[0m Sesi \x1b[1m"${targetSession.name}"\x1b[0m (ID: \x1b[1;33m${targetSession.sessionId}\x1b[0m) berhasil dihapus dari disk!`);
-      if (res.deletedFiles.length > 0) {
-        console.log(`\x1b[90m📁 File terhapus:`);
-        res.deletedFiles.forEach(f => console.log(`   • ${f}`));
-        console.log(`\x1b[0m`);
+    const deletedList = [];
+    let totalDeletedFiles = 0;
+
+    for (const [, { session, query }] of resolvedMap) {
+      const res = deleteSession(session.sessionId);
+      if (res.success) {
+        settingsManager.clearSessionSettings(session.sessionId);
+        deletedList.push({ name: session.name, id: session.sessionId, query });
+        totalDeletedFiles += res.deletedFiles.length;
       }
-      console.log(`\x1b[1;33m💡 Tip:\x1b[0m Jalankan \x1b[1;32mcrc discord sync\x1b[0m untuk menghapus channel sesi ini dari Discord.`);
-    } else {
-      console.error(`\x1b[31m❌ [Gagal]\x1b[0m ${res.message}`);
     }
+
+    console.log(`\n\x1b[32m✔ [Berhasil]\x1b[0m ${deletedList.length} sesi berhasil dihapus dari disk:`);
+    for (const item of deletedList) {
+      const shortId = item.id.replace(/-/g, '').slice(-4);
+      console.log(`   • \x1b[1m"${item.name}"\x1b[0m (Kode: \x1b[1;33m${shortId}\x1b[0m | ID: \x1b[90m${item.id}\x1b[0m)`);
+    }
+
+    if (notFoundTargets.length > 0) {
+      console.log(`\n\x1b[33m⚠️ Target tidak ditemukan (${notFoundTargets.length}):\x1b[0m ${notFoundTargets.join(', ')}`);
+    }
+
+    console.log(`\n\x1b[1;33m💡 Tip:\x1b[0m Jalankan \x1b[1;32mcrc discord sync\x1b[0m untuk menyinkronkan & membersihkan channel Discord.`);
     return;
   }
 
