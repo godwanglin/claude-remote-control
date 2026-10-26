@@ -1,12 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { ClaudePermissionMode, ClaudeEffortLevel } from './claude-headless.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const projectRoot = path.resolve(__dirname, '..');
-const SETTINGS_FILE = path.resolve(projectRoot, 'settings.json');
+import { getRuntimePaths, ensureRuntimeDirs, projectRoot } from './runtime-paths.js';
 
 export type FollowupMode = 'default' | 'queue' | 'steer';
 
@@ -47,13 +42,26 @@ class SettingsManager {
     return this._settings;
   }
 
+  private _resolveFilePath(): string {
+    const paths = ensureRuntimeDirs();
+    // Migrasi: jika file settings.json di config/ belum ada tapi di projectRoot ada, salin
+    const legacyFile = path.resolve(projectRoot, 'settings.json');
+    if (!fs.existsSync(paths.settingsFile) && fs.existsSync(legacyFile)) {
+      try {
+        fs.copyFileSync(legacyFile, paths.settingsFile);
+      } catch (_) {}
+    }
+    return paths.settingsFile;
+  }
+
   /**
-   * Membaca pengaturan dari file settings.json di project root
+   * Membaca pengaturan dari file settings.json di config runtime
    */
   public load(): StoredSettings {
+    const targetFile = this._resolveFilePath();
     try {
-      if (fs.existsSync(SETTINGS_FILE)) {
-        const raw = fs.readFileSync(SETTINGS_FILE, 'utf8');
+      if (fs.existsSync(targetFile)) {
+        const raw = fs.readFileSync(targetFile, 'utf8');
         const parsed = JSON.parse(raw);
         this._settings = {
           ...DEFAULT_SETTINGS,
@@ -78,6 +86,7 @@ class SettingsManager {
    * Menyimpan perubahan pengaturan ke settings.json
    */
   public save(partial?: Partial<StoredSettings>): void {
+    const targetFile = this._resolveFilePath();
     if (partial) {
       this._settings = {
         ...this._settings,
@@ -90,7 +99,15 @@ class SettingsManager {
     }
 
     try {
-      fs.writeFileSync(SETTINGS_FILE, JSON.stringify(this._settings, null, 2), 'utf8');
+      fs.writeFileSync(targetFile, JSON.stringify(this._settings, null, 2), 'utf8');
+      
+      // Jika mode dev, sinkronkan juga ke projectRoot/settings.json agar transparan
+      const legacyFile = path.resolve(projectRoot, 'settings.json');
+      if (fs.existsSync(legacyFile)) {
+        try {
+          fs.writeFileSync(legacyFile, JSON.stringify(this._settings, null, 2), 'utf8');
+        } catch (_) {}
+      }
     } catch (err: any) {
       console.warn(`[Settings Warning] Gagal menyimpan settings.json:`, err.message);
     }

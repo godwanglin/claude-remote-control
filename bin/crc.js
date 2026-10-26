@@ -82,6 +82,21 @@ const { getSidebarProjectGroups, getCachedSessionsList } = await import(distFile
 const { getSessionStatus } = await import(distFile('session-status.js'));
 const { detectTurnMediaFiles } = await import(distFile('media-detector.js'));
 
+const {
+  config,
+  saveCredentials,
+  saveOwnerId,
+  verifyDiscordToken,
+  verifyDiscordOwner,
+  getBotInviteUrl
+} = await import(distFile('config.js'));
+
+const {
+  runSetupWizard,
+  runInteractiveDashboard,
+  printTokenMissingCard
+} = await import(distFile('tui-wizard.js'));
+
 /**
  * Format string box dari commands-handler untuk terminal
  */
@@ -252,16 +267,20 @@ async function executeChatStream(prompt, session = null, isVerbose = false) {
 
 function printHelp() {
   console.log(`
-\x1b[1;36mCRC (Claude Remote Control) - CLI, Background Daemon & System Tray\x1b[0m
+\x1b[1;36mCRC (Claude Remote Control) - Standalone CLI, Background Daemon & System Tray\x1b[0m
 Bridge remote control untuk Anthropic Claude Desktop di Windows
 
 \x1b[1;33mPENGGUNAAN:\x1b[0m
   crc <perintah> [opsi...]
 
+\x1b[1;33mINTERAKTIF & ONBOARDING:\x1b[0m
+  \x1b[1;32mcrc\x1b[0m                     Buka Dashboard TUI Interaktif (Menu kontrol & navigasi)
+  \x1b[1;32mcrc setup\x1b[0m               Jalankan Setup Wizard interaktif konfigurasi bot & token
+  \x1b[1;32mcrc discord <cmd>\x1b[0m        Kelola kredensial Discord (token, owner, status, invite)
+
 \x1b[1;33mMODE EKSEKUSI BOT:\x1b[0m
-  \x1b[1;32mcrc\x1b[0m                     Jalankan bot interaktif di terminal (tekan Ctrl+C untuk keluar)
-  \x1b[1;32mcrc -v, --verbose, --detail\x1b[0m Jalankan bot di terminal dengan LIVE LOG DETAIL (pesan masuk, tool use)
-  \x1b[1;32mcrc start [-v]\x1b[0m          Sama dengan 'crc', jalankan bot langsung di terminal
+  \x1b[1;32mcrc start [-v]\x1b[0m          Jalankan bot langsung di terminal (foreground)
+  \x1b[1;32mcrc -v, --verbose\x1b[0m       Jalankan bot di terminal dengan live detail log (pesan, tool use)
   \x1b[1;32mcrc tray\x1b[0m                Jalankan bot di background dengan icon System Tray di taskbar
   \x1b[1;32mcrc stop\x1b[0m                Matikan bot background / system tray yang sedang berjalan
   \x1b[1;32mcrc restart\x1b[0m             Muat ulang background bot / system tray
@@ -270,9 +289,8 @@ Bridge remote control untuk Anthropic Claude Desktop di Windows
   \x1b[1;32mcrc help\x1b[0m                Tampilkan panduan bantuan ini
 
 \x1b[1;33mMANAJEMEN KATEGORI & CHANNEL DISCORD:\x1b[0m
-  \x1b[1;32mcrc channel sync\x1b[0m            Sinkronisasi tab sesi Claude ke channel Discord (3 ch/dtk)
-  \x1b[1;32mcrc channel clear\x1b[0m           Hapus seluruh channel di dalam kategori "📁 Claude Remote"
-  \x1b[1;32mcrc channel clear --category\x1b[0m Hapus seluruh channel sekaligus kategorinya
+  \x1b[1;32mcrc channel sync\x1b[0m            Sinkronisasi tab sesi Claude ke kategori proyek Discord
+  \x1b[1;32mcrc channel clear\x1b[0m           Hapus seluruh text channel & kategori proyek yang dikelola CRC
 
 \x1b[1;33mPERINTAH KONTROL SESI CLAUDE:\x1b[0m
   \x1b[1;32m/sessions\x1b[0m               Tampilkan daftar tab & sesi proyek (sidebar Claude Desktop)
@@ -286,15 +304,108 @@ Bridge remote control untuk Anthropic Claude Desktop di Windows
   \x1b[1;32mapi\x1b[0m [port]             Jalankan server REST API lokal (default: 3300)
 
 \x1b[1;33mCONTOH PENGGUNAAN:\x1b[0m
-  crc                     # Jalankan bot di terminal (standar)
-  crc -v                  # Jalankan bot di terminal dengan live detail log
-  crc chat "Halo" -v      # Chat terminal dengan detail tool use & media detection
+  crc                     # Buka dashboard interaktif
+  crc setup               # Wizard setup token bot & owner ID
+  crc start -v            # Jalankan bot di terminal dengan live detail log
+  crc discord status      # Cek status akun bot & link invite
+  crc channel sync        # Sinkronkan sesi lokal ke kategori Discord
   crc tray                # Jalankan di system tray taskbar (background)
-  crc logs -f -v          # Pantau log bot realtime dengan live detail (tool use, respon Claude, dll)
-  crc logs -vf            # Sama dengan -f -v (shorthand UNIX style)
-  crc logs -c             # Bersihkan file log (crc logs --clear)
-  crc status              # Periksa status bot dan sesi aktif
+  crc logs -f -v          # Pantau log bot realtime dengan live detail
   crc stop                # Matikan bot background
+`);
+}
+
+/**
+ * Subcommand handler untuk 'crc discord <subcommand>'
+ */
+async function handleDiscordCommand(subArgs) {
+  const subCmd = subArgs[0] ? subArgs[0].toLowerCase() : '';
+  const param = subArgs.slice(1).join(' ').trim();
+
+  if (subCmd === 'setup' || subCmd === 'wizard') {
+    await runSetupWizard();
+    return;
+  }
+
+  if (subCmd === 'token') {
+    if (!param) {
+      console.log('\x1b[31m[Error]\x1b[0m Harap masukkan token bot. Contoh: crc discord token <BOT_TOKEN>');
+      return;
+    }
+    console.log('\x1b[36m[CRC]\x1b[0m Memvalidasi token ke Discord API...');
+    const check = await verifyDiscordToken(param);
+    if (!check.valid || !check.botUser) {
+      console.error(`\x1b[31m❌ Token tidak valid:\x1b[0m ${check.error || 'Autentikasi gagal'}`);
+      return;
+    }
+    saveCredentials(param);
+    console.log(`\x1b[32m✔ Token berhasil disimpan!\x1b[0m Terhubung ke bot: \x1b[1;32m${check.botUser.username}#${check.botUser.discriminator || '0000'}\x1b[0m (ID: ${check.botUser.id})`);
+    return;
+  }
+
+  if (subCmd === 'owner') {
+    if (!param) {
+      console.log('\x1b[31m[Error]\x1b[0m Harap masukkan User ID Discord Owner. Contoh: crc discord owner 1036530575948927018');
+      return;
+    }
+    const token = config.discordToken || process.env.DISCORD_TOKEN;
+    if (token) {
+      console.log('\x1b[36m[CRC]\x1b[0m Memverifikasi Owner ID ke Discord API...');
+      const check = await verifyDiscordOwner(token, param);
+      if (check.valid && check.user) {
+        console.log(`\x1b[32m✔ Owner ditemukan:\x1b[0m \x1b[1;32m@${check.user.username}\x1b[0m (${check.user.id})`);
+      } else {
+        console.log(`\x1b[33m⚠️ Peringatan:\x1b[0m Tidak dapat memverifikasi owner (${check.error || 'Akan dicoba nanti'}).`);
+      }
+    }
+    saveOwnerId(param);
+    console.log(`\x1b[32m✔ Owner ID berhasil disimpan!\x1b[0m`);
+    return;
+  }
+
+  if (subCmd === 'invite') {
+    const token = config.discordToken || process.env.DISCORD_TOKEN;
+    if (!token) {
+      printTokenMissingCard();
+      return;
+    }
+    const check = await verifyDiscordToken(token);
+    if (!check.valid || !check.botUser) {
+      console.error(`\x1b[31m❌ Gagal mengambil info bot:\x1b[0m ${check.error || 'Token tidak valid'}`);
+      return;
+    }
+    const inviteUrl = getBotInviteUrl(check.botUser.id);
+    console.log(`\n\x1b[1;36m🔗 LINK INVITE DISCORD BOT:\x1b[0m`);
+    console.log(`\x1b[4;32m${inviteUrl}\x1b[0m\n`);
+    return;
+  }
+
+  if (subCmd === 'status' || !subCmd) {
+    const token = config.discordToken || process.env.DISCORD_TOKEN;
+    console.log(`\n\x1b[1;36m=== STATUS KONEKSI DISCORD CRC ===\x1b[0m`);
+    if (!token) {
+      console.log(`Token Bot : \x1b[31mBelum disetel\x1b[0m (Jalankan 'crc setup' atau 'crc discord token <token>')`);
+    } else {
+      console.log(`Token Bot : \x1b[32m${token.substring(0, 10)}...${token.slice(-5)}\x1b[0m`);
+      const check = await verifyDiscordToken(token);
+      if (check.valid && check.botUser) {
+        console.log(`Bot User  : \x1b[1;32m${check.botUser.username}#${check.botUser.discriminator || '0000'}\x1b[0m (ID: ${check.botUser.id})`);
+        console.log(`Invite URL: \x1b[36m${getBotInviteUrl(check.botUser.id)}\x1b[0m`);
+      } else {
+        console.log(`Bot User  : \x1b[31mTidak valid / Gagal terhubung (${check.error})\x1b[0m`);
+      }
+    }
+    const owner = config.ownerId;
+    console.log(`Owner ID  : ${owner ? `\x1b[32m${owner}\x1b[0m` : '\x1b[33mBelum disetel (Auto-claim pada pesan pertama)\x1b[0m'}\n`);
+    return;
+  }
+
+  console.log(`\n\x1b[1;33mPANDUAN PERINTAH CRC DISCORD:\x1b[0m
+  \x1b[1;32mcrc discord setup\x1b[0m          Buka setup wizard interaktif
+  \x1b[1;32mcrc discord token <TOKEN>\x1b[0m  Simpan & verifikasi Discord Bot Token
+  \x1b[1;32mcrc discord owner <USER_ID>\x1b[0m Simpan & verifikasi User ID Owner
+  \x1b[1;32mcrc discord invite\x1b[0m         Dapatkan link invite bot dengan izin admin
+  \x1b[1;32mcrc discord status\x1b[0m         Cek info akun bot dan status koneksi Discord
 `);
 }
 
@@ -302,6 +413,12 @@ Bridge remote control untuk Anthropic Claude Desktop di Windows
  * Jalankan bot langsung di terminal (foreground / interaktif, bisa Ctrl+C)
  */
 async function runBotForeground(options = {}) {
+  const token = config.discordToken || process.env.DISCORD_TOKEN;
+  if (!token) {
+    printTokenMissingCard();
+    process.exit(1);
+  }
+
   const botScript = path.join(distPath, 'bot.js');
   if (!fs.existsSync(botScript)) {
     console.log('\x1b[33m[CRC]\x1b[0m Mengompilasi TypeScript ke dist...');
@@ -343,16 +460,14 @@ async function runBotForeground(options = {}) {
  */
 async function runChannelCliCommand(action, options = {}) {
   const { Client, GatewayIntentBits } = await import('discord.js');
-  const { config } = await import(distFile('config.js'));
   const { 
     syncChannelsWithSessions, 
-    clearCategoryChannels, 
-    DEFAULT_CATEGORY_NAME 
+    clearCategoryChannels
   } = await import(distFile('channel-manager.js'));
 
   const token = config.discordToken || process.env.DISCORD_TOKEN;
   if (!token) {
-    console.error('\x1b[31m[Error]\x1b[0m DISCORD_TOKEN tidak ditemukan di file .env');
+    printTokenMissingCard();
     process.exit(1);
   }
 
@@ -371,12 +486,12 @@ async function runChannelCliCommand(action, options = {}) {
       console.log(`\x1b[34m[Server: ${guild.name}]\x1b[0m Menjalankan perintah channel: \x1b[1;33m${action}\x1b[0m...`);
 
       if (action === 'clear') {
-        const deleteCategory = options.category || options.all || false;
-        const res = await clearCategoryChannels(guild, DEFAULT_CATEGORY_NAME, deleteCategory);
-        console.log(`\x1b[32m✔ [Berhasil]\x1b[0m Berhasil menghapus ${res.deletedChannels} channel di dalam kategori "${DEFAULT_CATEGORY_NAME}".${res.categoryDeleted ? ' Kategori juga dihapus.' : ''}`);
+        const deleteCategory = options.category !== false;
+        const res = await clearCategoryChannels(guild, deleteCategory);
+        console.log(`\x1b[32m✔ [Berhasil]\x1b[0m Berhasil menghapus ${res.deletedChannels} channel dan ${res.deletedCategories} kategori proyek CRC.`);
       } else if (action === 'sync') {
         const res = await syncChannelsWithSessions(guild);
-        console.log(`\x1b[32m✔ [Berhasil]\x1b[0m Kategori: "${res.category.name}" | Channel Baru: ${res.created} | Tersimpan: ${res.existing} | Dihapus: ${res.deleted}`);
+        console.log(`\x1b[32m✔ [Berhasil]\x1b[0m Selesai: ${res.categoriesCount} kategori proyek | Channel Baru: +${res.createdChannels} | Tersimpan: ${res.existingChannels} | Dihapus: -${res.deletedChannels} (Total: ${res.totalSessions} sesi)`);
       }
     }
   } catch (err) {
@@ -519,7 +634,16 @@ async function main() {
 
   // Jika tanpa argumen atau hanya flag verbose (misal: crc, crc -v, crc --verbose, crc --detail)
   if (cleanArgs.length === 0) {
-    await runBotForeground({ verbose: hasVerbose });
+    if (hasVerbose) {
+      await runBotForeground({ verbose: true });
+      return;
+    }
+    const token = config.discordToken || process.env.DISCORD_TOKEN;
+    if (!token) {
+      await runSetupWizard();
+    } else {
+      await runInteractiveDashboard();
+    }
     return;
   }
 
@@ -528,14 +652,42 @@ async function main() {
 
   const activeSession = resolveCurrentSession();
 
+  // menu / dashboard / tui / ui
+  if (command === 'menu' || command === 'dashboard' || command === 'tui' || command === 'ui') {
+    await runInteractiveDashboard();
+    return;
+  }
+
+  // setup / wizard
+  if (command === 'setup' || command === 'wizard') {
+    await runSetupWizard();
+    return;
+  }
+
+  // discord
+  if (command === 'discord') {
+    await handleDiscordCommand(cleanArgs.slice(1));
+    return;
+  }
+
   // tray
   if (command === 'tray') {
+    const token = config.discordToken || process.env.DISCORD_TOKEN;
+    if (!token) {
+      printTokenMissingCard();
+      return;
+    }
     await startDaemon('tray');
     return;
   }
 
   // start / run (interaktif di terminal)
   if (command === 'start' || command === 'run') {
+    const token = config.discordToken || process.env.DISCORD_TOKEN;
+    if (!token) {
+      printTokenMissingCard();
+      return;
+    }
     if (args.includes('--tray') || args.includes('-t')) {
       await startDaemon('tray');
       return;
@@ -550,6 +702,11 @@ async function main() {
 
   // daemon (background tanpa tray)
   if (command === 'daemon') {
+    const token = config.discordToken || process.env.DISCORD_TOKEN;
+    if (!token) {
+      printTokenMissingCard();
+      return;
+    }
     await startDaemon('headless');
     return;
   }
@@ -581,9 +738,8 @@ async function main() {
 
     console.log(`
 \x1b[1;33mPERINTAH MANAJEMEN CHANNEL DISCORD:\x1b[0m
-  \x1b[1;32mcrc channel sync\x1b[0m             Sinkronisasi tab sesi Claude ke channel Discord (3 ch/dtk)
-  \x1b[1;32mcrc channel clear\x1b[0m            Hapus semua channel di dalam kategori "📁 Claude Remote"
-  \x1b[1;32mcrc channel clear --category\x1b[0m Hapus semua channel sekaligus kategorinya
+  \x1b[1;32mcrc channel sync\x1b[0m             Sinkronisasi tab sesi Claude ke kategori proyek Discord (3 ch/dtk)
+  \x1b[1;32mcrc channel clear\x1b[0m            Hapus semua channel & kategori proyek yang dikelola CRC
 `);
     return;
   }

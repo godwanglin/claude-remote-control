@@ -7,9 +7,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 
-export const DAEMON_DIR = path.join(projectRoot, '.daemon');
-export const STATE_FILE = path.join(DAEMON_DIR, 'daemon.json');
-export const LOG_FILE = path.join(DAEMON_DIR, 'crc.log');
+import { getRuntimePaths, ensureRuntimeDirs } from './runtime-paths.js';
+
+const rPaths = ensureRuntimeDirs();
+export const DAEMON_DIR = rPaths.dataDir;
+export const STATE_FILE = rPaths.daemonFile;
+export const LOG_FILE = rPaths.logFile;
 
 export interface DaemonState {
   pid: number;
@@ -21,12 +24,10 @@ export interface DaemonState {
 }
 
 /**
- * Pastikan direktori .daemon tersedia
+ * Pastikan direktori daemon dan log tersedia
  */
 export function ensureDaemonDir(): void {
-  if (!fs.existsSync(DAEMON_DIR)) {
-    fs.mkdirSync(DAEMON_DIR, { recursive: true });
-  }
+  ensureRuntimeDirs();
 }
 
 /**

@@ -9,6 +9,7 @@ settings.local.json
 
 # Background daemon runtime & logs
 .daemon/
+.crc-dev/
 *.log
 
 # Build output

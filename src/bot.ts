@@ -41,11 +41,11 @@ import { settingsManager } from './settings-manager.js';
 import { ClaudeHeadless, getHostCredentials } from './claude-headless.js';
 import { detectTurnMediaFiles, DetectedMediaFile } from './media-detector.js';
 import { 
-  DEFAULT_CATEGORY_NAME, 
   syncChannelsWithSessions, 
   extractSessionIdFromTopic, 
-  resolveClaudeSessionFromId 
+  resolveClaudeSessionFromChannel 
 } from './channel-manager.js';
+import { getChannelByChannelId, touchChannelActivity } from './channels-store.js';
 
 // Pastikan environment gateway Claude Desktop terinjeksi ke bot
 const hostCreds = getHostCredentials();
@@ -583,16 +583,48 @@ client.once('clientReady', async (c) => {
     console.warn('[Slash Commands Warn]', err.message);
   }
 
-  // Sinkronisasi otomatis Kategori dan Channel Claude Remote di setiap server
+  // Sinkronisasi awal Kategori Proyek dan Channel saat bot online
   for (const [, guild] of c.guilds.cache) {
     try {
-      console.log(`\x1b[36m[Channel Sync]\x1b[0m Memulai sinkronisasi kategori & channel di server "${guild.name}"...`);
+      console.log(`\x1b[36m[Channel Sync]\x1b[0m Memulai sinkronisasi kategori proyek & channel di server "${guild.name}"...`);
       await syncChannelsWithSessions(guild);
     } catch (err: any) {
       console.error(`[Channel Sync Error] Gagal sinkronisasi guild "${guild.name}":`, err.message);
     }
   }
+
+  // Mulai scheduler Auto-Sync berkala setiap 60 detik (1 menit)
+  startAutoSyncScheduler();
 });
+
+let isAutoSyncing = false;
+let autoSyncTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Mesin background auto-sync 60 detik dengan safety lock runner aktif
+ */
+function startAutoSyncScheduler(): void {
+  if (autoSyncTimer) clearTimeout(autoSyncTimer);
+
+  autoSyncTimer = setTimeout(async () => {
+    // Tunda sync jika Claude sedang aktif streaming memproses prompt
+    if (activeRunners.size > 0 || isAutoSyncing) {
+      startAutoSyncScheduler();
+      return;
+    }
+
+    isAutoSyncing = true;
+    try {
+      for (const [, guild] of client.guilds.cache) {
+        await syncChannelsWithSessions(guild);
+      }
+    } catch (_) {
+    } finally {
+      isAutoSyncing = false;
+      startAutoSyncScheduler();
+    }
+  }, 60_000);
+}
 
 // --- DISCORD NATIVE SLASH COMMANDS & COMPONENTS INTERACTION ---
 client.on('interactionCreate', async (interaction) => {
@@ -1000,10 +1032,10 @@ client.on('interactionCreate', async (interaction) => {
       const res = await syncChannelsWithSessions(interaction.guild);
       await interaction.editReply(
         `✅ **Sinkronisasi Selesai!**\n` +
-        `- Kategori: **${res.category.name}**\n` +
-        `- Channel Baru Dibuat: **${res.created}**\n` +
-        `- Channel Tersimpan: **${res.existing}**\n` +
-        `- Channel Usang Dihapus: **${res.deleted}**\n` +
+        `- Kategori Proyek: **${res.categoriesCount}**\n` +
+        `- Channel Baru Dibuat: **${res.createdChannels}**\n` +
+        `- Channel Tersimpan: **${res.existingChannels}**\n` +
+        `- Channel Usang Dihapus: **${res.deletedChannels}**\n` +
         `- Total Sesi Aktif: **${res.totalSessions}**`
       );
       return;
@@ -1471,35 +1503,23 @@ client.on('messageCreate', async (message: Message) => {
   const cmd = cmdParts[0].toLowerCase();
   const cmdArg = cmdParts.slice(1).join(' ').trim();
 
-  // ISOLASI KATEGORI CLAUDE REMOTE
+  // ISOLASI KATEGORI CLAUDE REMOTE & LOOKUP CEPAT O(1)
   let targetSessionForMessage: ClaudeSession | null = null;
   if (message.guild) {
-    const parent = (message.channel as any).parent;
-    const isInsideClaudeCategory = parent && (
-      parent.name.toLowerCase() === DEFAULT_CATEGORY_NAME.toLowerCase() ||
-      parent.name.toLowerCase().includes('claude remote')
-    );
+    const topic = (message.channel as any).topic;
+    targetSessionForMessage = resolveClaudeSessionFromChannel(message.channel.id, topic);
 
-    // Jika pesan dikirim di luar kategori Claude Remote:
-    if (!isInsideClaudeCategory) {
+    // Jika pesan dikirim di luar channel sesi Claude terdaftar:
+    if (!targetSessionForMessage) {
       // Izinkan perintah admin tertentu
-      if (isCommand && (cmd === 'sync' || cmd === 'sync-channel' || cmd === 'settings' || cmd === 'setelan' || cmd === 'ping')) {
+      if (isCommand && (cmd === 'sync' || cmd === 'sync-channel' || cmd === 'settings' || cmd === 'setelan' || cmd === 'ping' || cmd === 'status')) {
         // Lanjutkan ke eksekusi command
       } else {
-        // ISOLASI PENUH: Jangan respon atau proses apapun di luar kategori!
+        // ISOLASI PENUH: Jangan respon atau proses apapun di luar channel sesi!
         return;
       }
     } else {
-      // Channel berada di dalam kategori Claude Remote -> Ambil metadata SessionID dari topic
-      const topic = (message.channel as any).topic;
-      const channelSessionId = extractSessionIdFromTopic(topic);
-      if (channelSessionId) {
-        targetSessionForMessage = resolveClaudeSessionFromId(channelSessionId);
-        if (!targetSessionForMessage) {
-          await message.reply('⚠️ Sesi Claude untuk channel ini tidak ditemukan di PC (mungkin sudah dipindahkan atau dihapus).\nKetik `/sync` untuk memperbarui saluran.');
-          return;
-        }
-      }
+      touchChannelActivity(message.channel.id);
     }
   }
 
@@ -1524,14 +1544,14 @@ client.on('messageCreate', async (message: Message) => {
         return;
       }
       logDetail('Bot Balasan', 'Memulai sinkronisasi kategori & channel...', '\x1b[33m');
-      const waitMsg = await message.reply('🔄 Sedang melakukan sinkronisasi kategori & channel dengan sesi Claude di PC...');
+      const waitMsg = await message.reply('🔄 Sedang melakukan sinkronisasi kategori proyek & channel dengan sesi Claude di PC...');
       const res = await syncChannelsWithSessions(message.guild);
       await waitMsg.edit(
         `✅ **Sinkronisasi Selesai!**\n` +
-        `- Kategori: **${res.category.name}**\n` +
-        `- Channel Baru Dibuat: **${res.created}**\n` +
-        `- Channel Tersimpan: **${res.existing}**\n` +
-        `- Channel Usang Dihapus: **${res.deleted}**\n` +
+        `- Kategori Proyek: **${res.categoriesCount}**\n` +
+        `- Channel Baru Dibuat: **${res.createdChannels}**\n` +
+        `- Channel Tersimpan: **${res.existingChannels}**\n` +
+        `- Channel Usang Dihapus: **${res.deletedChannels}**\n` +
         `- Total Sesi Aktif: **${res.totalSessions}**`
       );
       return;
