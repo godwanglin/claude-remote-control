@@ -4,9 +4,19 @@
 import fs from 'fs';
 import path from 'path';
 
-const CLAUDE_DIR = path.join(process.env.USERPROFILE || 'C:/Users/aiden', '.claude');
+const userHome = process.env.USERPROFILE || process.env.HOME || (process.platform === 'win32' ? 'C:/Users/aiden' : '/root');
+const CLAUDE_DIR = path.join(userHome, '.claude');
 const SESSIONS_DIR = path.join(CLAUDE_DIR, 'sessions');
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
+
+function getClaudeAppDirs(): string[] {
+  const localAppData = process.env.LOCALAPPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Local') : '');
+  if (!localAppData) return [];
+  return [
+    path.join(localAppData, 'Claude-3p'),
+    path.join(localAppData, 'Claude')
+  ].filter(d => fs.existsSync(d));
+}
 
 export interface ClaudeSession {
   pid: number;
@@ -34,12 +44,15 @@ export function getProjectFolderFromCwd(cwd: string): string {
  */
 export function getActiveClaudeDesktopHostSessionId(): string | null {
   try {
-    const cfgPath = path.join(process.env.LOCALAPPDATA || 'C:/Users/aiden/AppData/Local', 'Claude-3p', 'claude_desktop_config.json');
-    if (fs.existsSync(cfgPath)) {
-      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-      const primaryId = cfg?.preferences?.epitaxyPrefs?.['desktop-frame.paneStore.v1']?.state?.lastPrimaryCodeSession?.id;
-      if (primaryId) {
-        return primaryId;
+    const appDirs = getClaudeAppDirs();
+    for (const appDir of appDirs) {
+      const cfgPath = path.join(appDir, 'claude_desktop_config.json');
+      if (fs.existsSync(cfgPath)) {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        const primaryId = cfg?.preferences?.epitaxyPrefs?.['desktop-frame.paneStore.v1']?.state?.lastPrimaryCodeSession?.id;
+        if (primaryId) {
+          return primaryId;
+        }
       }
     }
   } catch (_) {}
@@ -54,31 +67,34 @@ export function getActiveDesktopSessionInfo(): { sessionId: string; name: string
     const hostId = getActiveClaudeDesktopHostSessionId();
     if (!hostId) return null;
 
-    const sessionsBaseDir = path.join(process.env.LOCALAPPDATA || 'C:/Users/aiden/AppData/Local', 'Claude-3p', 'claude-code-sessions');
-    if (!fs.existsSync(sessionsBaseDir)) return null;
+    const appDirs = getClaudeAppDirs();
+    for (const appDir of appDirs) {
+      const sessionsBaseDir = path.join(appDir, 'claude-code-sessions');
+      if (!fs.existsSync(sessionsBaseDir)) continue;
 
-    function findDesktopSession(dir: string): any {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) {
-          const res = findDesktopSession(full);
-          if (res) return res;
-        } else if (e.name === `${hostId}.json`) {
-          return JSON.parse(fs.readFileSync(full, 'utf8'));
+      function findDesktopSession(dir: string): any {
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, e.name);
+          if (e.isDirectory()) {
+            const res = findDesktopSession(full);
+            if (res) return res;
+          } else if (e.name === `${hostId}.json`) {
+            return JSON.parse(fs.readFileSync(full, 'utf8'));
+          }
         }
+        return null;
       }
-      return null;
-    }
 
-    const s = findDesktopSession(sessionsBaseDir);
-    if (s && s.cliSessionId && s.cwd) {
-      return {
-        sessionId: s.cliSessionId,
-        name: s.title || path.basename(s.cwd),
-        cwd: s.cwd,
-        model: s.model,
-        hostSessionId: hostId
-      };
+      const s = findDesktopSession(sessionsBaseDir);
+      if (s && s.cliSessionId && s.cwd) {
+        return {
+          sessionId: s.cliSessionId,
+          name: s.title || path.basename(s.cwd),
+          cwd: s.cwd,
+          model: s.model,
+          hostSessionId: hostId
+        };
+      }
     }
   } catch (_) {}
   return null;

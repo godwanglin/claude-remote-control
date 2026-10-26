@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { ClaudeSession, getActiveSessions } from './ipc.js';
 
-const PROJECTS_DIR = path.join(process.env.USERPROFILE || 'C:/Users/aiden', '.claude', 'projects');
+const userHome = process.env.USERPROFILE || process.env.HOME || (process.platform === 'win32' ? 'C:/Users/aiden' : '/root');
+const PROJECTS_DIR = path.join(userHome, '.claude', 'projects');
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ProjectSessionItem {
@@ -31,28 +32,36 @@ export function getCachedSessionsList(): ProjectSessionItem[] {
 }
 
 export function resolveOriginalFolder(folderName: string): string {
-  const drive = folderName[0] + ':\\';
-  const rest = folderName.slice(3).split('-');
-  let cur = drive;
-  let i = 0;
-  while (i < rest.length) {
-    let matched = false;
-    for (let len = rest.length - i; len >= 1; len--) {
-      const seg = rest.slice(i, i + len).join('-');
-      const candidate = path.join(cur, seg);
-      if (fs.existsSync(candidate)) {
-        cur = candidate;
-        i += len;
-        matched = true;
-        break;
+  // Format Windows: C--path-to-folder atau D--path-to-folder
+  if (folderName.length >= 3 && folderName[1] === '-' && folderName[2] === '-') {
+    const drive = folderName[0].toUpperCase() + ':\\';
+    const rest = folderName.slice(3).split('-');
+    let cur = drive;
+    let i = 0;
+    while (i < rest.length) {
+      let matched = false;
+      for (let len = rest.length - i; len >= 1; len--) {
+        const seg = rest.slice(i, i + len).join('-');
+        const candidate = path.join(cur, seg);
+        if (fs.existsSync(candidate)) {
+          cur = candidate;
+          i += len;
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        cur = path.join(cur, rest[i]);
+        i++;
       }
     }
-    if (!matched) {
-      cur = path.join(cur, rest[i]);
-      i++;
-    }
+    return cur;
   }
-  return cur;
+  // Linux / macOS path fallback (e.g. -home-user-project)
+  if (folderName.startsWith('-')) {
+    return '/' + folderName.slice(1).replace(/-/g, '/');
+  }
+  return folderName;
 }
 
 /**
@@ -70,21 +79,32 @@ export function getSidebarProjectGroups(): { groups: ProjectSidebarGroup[]; flat
 
   if (fs.existsSync(PROJECTS_DIR)) {
     const projectEntries = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
-      .filter(d => d.isDirectory() && d.name.startsWith('C--'));
+      .filter(d => d.isDirectory() && !d.name.startsWith('.'));
 
     for (const pe of projectEntries) {
       const pDir = path.join(PROJECTS_DIR, pe.name);
       const diskFolder = resolveOriginalFolder(pe.name);
       const projectName = path.basename(diskFolder) || pe.name;
 
-      const subdirs = fs.readdirSync(pDir, { withFileTypes: true })
-        .filter(d => d.isDirectory() && UUID_REGEX.test(d.name));
+      // Temukan semua ID sesi: baik dari direktori UUID maupun file <UUID>.jsonl
+      const dirEntries = fs.readdirSync(pDir, { withFileTypes: true });
+      const sessionIds = new Set<string>();
+
+      for (const entry of dirEntries) {
+        if (entry.isDirectory() && UUID_REGEX.test(entry.name)) {
+          sessionIds.add(entry.name);
+        } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+          const sId = entry.name.slice(0, -6);
+          if (UUID_REGEX.test(sId)) {
+            sessionIds.add(sId);
+          }
+        }
+      }
 
       const sessionsInProject: ProjectSessionItem[] = [];
 
-      for (const sd of subdirs) {
-        const sId = sd.name;
-        let title = 'Percakapan Claude';
+      for (const sId of sessionIds) {
+        let title = '';
         const titleFile = path.join(pDir, sId, 'custom-title.json');
         if (fs.existsSync(titleFile)) {
           try {
@@ -100,15 +120,41 @@ export function getSidebarProjectGroups(): { groups: ProjectSidebarGroup[]; flat
           lastMod = fs.statSync(transcriptFile).mtimeMs;
           try {
             const fd = fs.openSync(transcriptFile, 'r');
-            const buf = Buffer.alloc(4096);
-            const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
+            const buf = Buffer.alloc(16384);
+            const bytesRead = fs.readSync(fd, buf, 0, 16384, 0);
             fs.closeSync(fd);
             const content = buf.toString('utf8', 0, bytesRead);
+            
             const m = content.match(/"cwd"\s*:\s*"([^"]+)"/);
             if (m) {
               realFolder = m[1].replace(/\\\\/g, '\\');
             }
+
+            // Jika belum ada customTitle, ekstrak dari prompt user pertama di transkrip
+            if (!title) {
+              const lines = content.split('\n');
+              for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                  const entry = JSON.parse(line);
+                  if (entry.type === 'user' && !entry.isMeta && entry.message?.content) {
+                    let text = typeof entry.message.content === 'string'
+                      ? entry.message.content
+                      : (Array.isArray(entry.message.content) ? entry.message.content.map((c: any) => c.text || '').join(' ') : '');
+                    text = text.replace(/<[^>]+>/g, '').replace(/[\r\n]+/g, ' ').trim();
+                    if (text && text.length > 2) {
+                      title = text.length > 40 ? text.slice(0, 37) + '...' : text;
+                      break;
+                    }
+                  }
+                } catch (_) {}
+              }
+            }
           } catch (_) {}
+        }
+
+        if (!title) {
+          title = 'Percakapan Claude';
         }
 
         if (!realFolder) {
@@ -134,14 +180,17 @@ export function getSidebarProjectGroups(): { groups: ProjectSidebarGroup[]; flat
         return b.lastModified - a.lastModified;
       });
 
-      // Deduplikasi judul di dalam proyek (seperti Claude Desktop yang hanya menampilkan sesi unik terbaru)
+      // Deduplikasi judul di dalam proyek (hanya buang jika judul kustom sama persis)
       const uniqueSessions: ProjectSessionItem[] = [];
       const seenTitles = new Set<string>();
       for (const s of sessionsInProject) {
-        if (!seenTitles.has(s.title)) {
-          seenTitles.add(s.title);
-          uniqueSessions.push(s);
+        if (s.title !== 'Percakapan Claude' && seenTitles.has(s.title)) {
+          continue;
         }
+        if (s.title !== 'Percakapan Claude') {
+          seenTitles.add(s.title);
+        }
+        uniqueSessions.push(s);
       }
 
       if (uniqueSessions.length > 0) {

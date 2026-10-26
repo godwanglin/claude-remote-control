@@ -62,27 +62,29 @@ export interface TurnSummary {
 }
 
 export function getHostCredentials(): Record<string, string> {
-  const localAppData = process.env.LOCALAPPDATA || 'C:/Users/aiden/AppData/Local';
-  const claude3pDir = path.join(localAppData, 'Claude-3p');
+  const localAppData = process.env.LOCALAPPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Local') : 'C:/Users/aiden/AppData/Local');
+  const appDirs = [path.join(localAppData, 'Claude-3p'), path.join(localAppData, 'Claude')];
   const cacheFile = path.join(os.homedir(), '.claude', 'gateway-creds-cache.json');
 
-  if (fs.existsSync(claude3pDir)) {
-    const credFiles = fs.readdirSync(claude3pDir).filter(f => f.startsWith('host-creds-') && f.endsWith('.json'));
-    if (credFiles.length > 0) {
-      credFiles.sort((a, b) => {
-        const statA = fs.statSync(path.join(claude3pDir, a));
-        const statB = fs.statSync(path.join(claude3pDir, b));
-        return statB.mtimeMs - statA.mtimeMs;
-      });
-      try {
-        const data = JSON.parse(fs.readFileSync(path.join(claude3pDir, credFiles[0]), 'utf8'));
-        if (data.env) {
-          try {
-            fs.writeFileSync(cacheFile, JSON.stringify(data.env, null, 2), 'utf8');
-          } catch (_) {}
-          return data.env;
-        }
-      } catch (_) {}
+  for (const dir of appDirs) {
+    if (fs.existsSync(dir)) {
+      const credFiles = fs.readdirSync(dir).filter(f => f.startsWith('host-creds-') && f.endsWith('.json'));
+      if (credFiles.length > 0) {
+        credFiles.sort((a, b) => {
+          const statA = fs.statSync(path.join(dir, a));
+          const statB = fs.statSync(path.join(dir, b));
+          return statB.mtimeMs - statA.mtimeMs;
+        });
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(dir, credFiles[0]), 'utf8'));
+          if (data.env) {
+            try {
+              fs.writeFileSync(cacheFile, JSON.stringify(data.env, null, 2), 'utf8');
+            } catch (_) {}
+            return data.env;
+          }
+        } catch (_) {}
+      }
     }
   }
 
@@ -98,17 +100,19 @@ export function getHostCredentials(): Record<string, string> {
 }
 
 export function getClaudeBinary(): string {
-  const localAppData = process.env.LOCALAPPDATA || 'C:/Users/aiden/AppData/Local';
-  const localAppDir = path.join(localAppData, 'Claude-3p', 'claude-code');
-  if (fs.existsSync(localAppDir)) {
-    const versions = fs.readdirSync(localAppDir).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-    for (const v of versions) {
-      const vDir = path.join(localAppDir, v);
-      if (fs.statSync(vDir).isDirectory()) {
-        const hashes = fs.readdirSync(vDir);
-        for (const h of hashes) {
-          const candidate = path.join(vDir, h, 'claude.exe');
-          if (fs.existsSync(candidate)) return candidate;
+  const localAppData = process.env.LOCALAPPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Local') : 'C:/Users/aiden/AppData/Local');
+  const appDirs = [path.join(localAppData, 'Claude-3p', 'claude-code'), path.join(localAppData, 'Claude', 'claude-code')];
+  for (const localAppDir of appDirs) {
+    if (fs.existsSync(localAppDir)) {
+      const versions = fs.readdirSync(localAppDir).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+      for (const v of versions) {
+        const vDir = path.join(localAppDir, v);
+        if (fs.statSync(vDir).isDirectory()) {
+          const hashes = fs.readdirSync(vDir);
+          for (const h of hashes) {
+            const candidate = path.join(vDir, h, 'claude.exe');
+            if (fs.existsSync(candidate)) return candidate;
+          }
         }
       }
     }
