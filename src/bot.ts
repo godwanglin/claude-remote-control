@@ -444,81 +444,7 @@ function buildSystemSettingsComponents(): ActionRowBuilder<StringSelectMenuBuild
   ];
 }
 
-// Definisi 7 Slash Commands Resmi
-const SLASH_COMMANDS = [
-  {
-    name: 'status',
-    description: 'Tampilkan info sesi Claude, model, dan pemakaian jendela konteks presisi'
-  },
-  {
-    name: 'sessions',
-    description: 'Tampilkan tab project dan daftar sesi Claude yang tersimpan di PC'
-  },
-  {
-    name: 'model',
-    description: 'Tampilkan atau ganti model Claude yang aktif',
-    options: [
-      {
-        name: 'pilih',
-        description: 'Pilih nomor atau ID model (1: Opus 5.5, 2: Opus 4.6)',
-        type: ApplicationCommandOptionType.String,
-        required: false,
-        choices: [
-          { name: '1. Opus 5.5 (claude-opus-5-5)', value: '1' },
-          { name: '2. Opus 4.6 (claude-opus-4-6)', value: '2' }
-        ]
-      }
-    ]
-  },
-  {
-    name: 'compact',
-    description: 'Ringkas riwayat obrolan sesi aktif untuk menghemat konteks token',
-    options: [
-      {
-        name: 'instruksi',
-        description: 'Instruksi khusus apa yang ingin dipertahankan dalam ringkasan (opsional)',
-        type: ApplicationCommandOptionType.String,
-        required: false
-      }
-    ]
-  },
-  {
-    name: 'permission',
-    description: 'Lihat atau ubah mode perizinan Claude Code',
-    options: [
-      {
-        name: 'mode',
-        description: 'Pilih mode perizinan',
-        type: ApplicationCommandOptionType.String,
-        required: false,
-        choices: [
-          { name: '1. Bypass Permissions (Lewati semua izin)', value: 'bypassPermissions' },
-          { name: '2. Auto (Otomatis deteksi izin)', value: 'auto' },
-          { name: '3. Accept Edits (Terima semua perubahan file)', value: 'acceptEdits' },
-          { name: '4. Manual (Minta persetujuan tiap aksi)', value: 'manual' },
-          { name: '5. Don\'t Ask (Jangan pernah tanya izin)', value: 'dontAsk' },
-          { name: '6. Plan (Hanya rencana/baca saja)', value: 'plan' }
-        ]
-      }
-    ]
-  },
-  {
-    name: 'clear',
-    description: 'Bersihkan tampilan chat di channel Discord (memori Claude tetap aman terjaga)'
-  },
-  {
-    name: 'stop',
-    description: 'Hentikan paksa proses Claude yang sedang berjalan saat ini'
-  },
-  {
-    name: 'sync',
-    description: 'Sinkronisasi kategori dan channel Discord dengan sesi Claude di PC'
-  },
-  {
-    name: 'settings',
-    description: 'Pusat kontrol setelan lengkap Claude (Sesi, Model, Izin, Tampilan, Effort, Timeout, Notif)'
-  }
-] as any;
+import { syncSlashCommands } from './slash-commands.js';
 
 client.once('clientReady', async (c) => {
   console.log('\x1b[36m====================================================\x1b[0m');
@@ -571,8 +497,9 @@ client.once('clientReady', async (c) => {
 
   // Sinkronisasi Slash Commands ke Discord API
   try {
-    await c.application.commands.set(SLASH_COMMANDS);
-    console.log('\x1b[32m[Slash Commands]\x1b[0m 8 Slash Commands berhasil disinkronkan ke Discord API!');
+    const cmdCount = await syncSlashCommands(c);
+    const modelCount = settingsManager.getModels().length;
+    console.log(`\x1b[32m[Slash Commands]\x1b[0m ${cmdCount} Slash Commands & ${modelCount} model choices berhasil disinkronkan ke Discord API!`);
   } catch (err: any) {
     console.warn('[Slash Commands Warn]', err.message);
   }

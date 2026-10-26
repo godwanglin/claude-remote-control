@@ -27,6 +27,17 @@ export interface ResolvedSessionConfig {
   notify: 'silent' | 'mention';
 }
 
+export interface ModelOption {
+  id: string;
+  name: string;
+  desc?: string;
+}
+
+export const DEFAULT_MODELS: ModelOption[] = [
+  { id: 'claude-opus-5-5', name: 'Opus 5.5', desc: 'Paling mumpuni untuk pekerjaan ambisius.' },
+  { id: 'claude-opus-4-6', name: 'Opus 4.6', desc: 'Model Claude Opus 4.6 standar.' }
+];
+
 export interface StoredSettings {
   verbosity: 'detail' | 'compact';
   effort: ClaudeEffortLevel;
@@ -34,6 +45,7 @@ export interface StoredSettings {
   notify: 'silent' | 'mention';
   permissionMode: ClaudePermissionMode;
   defaultModel: string;
+  models?: ModelOption[];
   sessionModels: Record<string, string>;
   sessionSettings: Record<string, SessionScopedSettings>;
   isManualSessionLocked: boolean;
@@ -48,6 +60,7 @@ const DEFAULT_SETTINGS: StoredSettings = {
   notify: 'silent',
   permissionMode: 'bypassPermissions',
   defaultModel: 'claude-opus-5-5',
+  models: DEFAULT_MODELS,
   sessionModels: {},
   sessionSettings: {},
   isManualSessionLocked: false,
@@ -170,7 +183,7 @@ class SettingsManager {
     const sOverride = sessionId ? this._settings.sessionSettings?.[sessionId] : undefined;
     const legacyModel = sessionId ? this._settings.sessionModels?.[sessionId] : undefined;
 
-    const model = sOverride?.model || legacyModel || this._settings.defaultModel || 'claude-opus-5-5';
+    const model = sOverride?.model || legacyModel || this._settings.defaultModel || this.getModels()[0]?.id || 'claude-opus-5-5';
     const isModelOverridden = !!(sOverride?.model || legacyModel);
 
     const permissionMode = sOverride?.permissionMode || this._settings.permissionMode || 'bypassPermissions';
@@ -238,6 +251,110 @@ class SettingsManager {
 
   public getSessionPermission(sessionId?: string): ClaudePermissionMode {
     return this.getSessionConfig(sessionId).permissionMode;
+  }
+
+  /**
+   * Mengambil daftar model AI Claude yang terdaftar
+   */
+  public getModels(): ModelOption[] {
+    if (this._settings.models && Array.isArray(this._settings.models) && this._settings.models.length > 0) {
+      return this._settings.models;
+    }
+    return [...DEFAULT_MODELS];
+  }
+
+  /**
+   * Menambah model baru atau memperbarui nama/deskripsi bila ID sudah ada
+   */
+  public addModel(model: ModelOption): { success: boolean; model: ModelOption; message: string } {
+    if (!model.id || !model.id.trim()) {
+      return { success: false, model, message: 'Model ID tidak boleh kosong.' };
+    }
+    const cleanId = model.id.trim();
+    const cleanName = (model.name || cleanId).trim();
+    const cleanDesc = (model.desc || `Model ${cleanName}`).trim();
+
+    if (!this._settings.models || !Array.isArray(this._settings.models)) {
+      this._settings.models = [...this.getModels()];
+    }
+
+    const existingIndex = this._settings.models.findIndex(m => m.id.toLowerCase() === cleanId.toLowerCase());
+    const modelObj: ModelOption = { id: cleanId, name: cleanName, desc: cleanDesc };
+
+    if (existingIndex >= 0) {
+      this._settings.models[existingIndex] = modelObj;
+    } else {
+      this._settings.models.push(modelObj);
+    }
+
+    this.save();
+    return { 
+      success: true, 
+      model: modelObj, 
+      message: existingIndex >= 0 ? `Model "${cleanName}" (${cleanId}) berhasil diperbarui.` : `Model "${cleanName}" (${cleanId}) berhasil ditambahkan.` 
+    };
+  }
+
+  /**
+   * Menghapus model berdasarkan ID atau nomor urut
+   */
+  public removeModel(idOrIndex: string): { success: boolean; removed?: ModelOption; message: string } {
+    if (!this._settings.models || !Array.isArray(this._settings.models)) {
+      this._settings.models = [...this.getModels()];
+    }
+
+    if (this._settings.models.length <= 1) {
+      return { success: false, message: 'Tidak dapat menghapus model terakhir. Minimal harus ada 1 model terdaftar.' };
+    }
+
+    const query = idOrIndex.trim().toLowerCase();
+    let index = -1;
+
+    // Cek apakah query adalah nomor urut (1-based index)
+    const num = parseInt(query, 10);
+    if (!isNaN(num) && num >= 1 && num <= this._settings.models.length) {
+      index = num - 1;
+    } else {
+      index = this._settings.models.findIndex(m => m.id.toLowerCase() === query || m.name.toLowerCase() === query);
+    }
+
+    if (index < 0) {
+      return { success: false, message: `Model "${idOrIndex}" tidak ditemukan dalam daftar.` };
+    }
+
+    const [removed] = this._settings.models.splice(index, 1);
+
+    // Jika model yang dihapus adalah defaultModel, ganti default ke model pertama yang tersisa
+    if (this._settings.defaultModel.toLowerCase() === removed.id.toLowerCase()) {
+      this._settings.defaultModel = this._settings.models[0].id;
+    }
+
+    this.save();
+    return { success: true, removed, message: `Model "${removed.name}" (${removed.id}) berhasil dihapus.` };
+  }
+
+  /**
+   * Mengatur model default global
+   */
+  public setDefaultModel(idOrIndex: string): { success: boolean; model?: ModelOption; message: string } {
+    const models = this.getModels();
+    const query = idOrIndex.trim().toLowerCase();
+    let target = models.find(m => m.id.toLowerCase() === query || m.name.toLowerCase() === query);
+
+    if (!target) {
+      const num = parseInt(query, 10);
+      if (!isNaN(num) && num >= 1 && num <= models.length) {
+        target = models[num - 1];
+      }
+    }
+
+    if (!target) {
+      return { success: false, message: `Model "${idOrIndex}" tidak valid atau belum terdaftar.` };
+    }
+
+    this._settings.defaultModel = target.id;
+    this.save();
+    return { success: true, model: target, message: `Model default diubah menjadi: ${target.name} (${target.id})` };
   }
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "@devnuby/crc",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Remote control client and Discord bot bridge for Claude Desktop / Claude Code",
   "type": "module",
   "main": "dist/bot.js",

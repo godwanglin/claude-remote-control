@@ -46,8 +46,10 @@ export function makeBox(title: string, lines: (string | null)[], width: number =
 export const botSettings = settingsManager.settings;
 
 export function renderCoreSettingsCard(currentSession: ClaudeSession | null): string {
-  const activeModelId = currentSession ? getSessionModel(currentSession.sessionId) : 'claude-opus-5-5';
-  const activeModelObj = AVAILABLE_MODELS.find(m => m.id === activeModelId) || AVAILABLE_MODELS[0];
+  const models = getAvailableModels();
+  const defaultModelId = settingsManager.settings.defaultModel || models[0]?.id || 'claude-opus-5-5';
+  const activeModelId = currentSession ? getSessionModel(currentSession.sessionId) : defaultModelId;
+  const activeModelObj = models.find(m => m.id === activeModelId) || models[0] || { name: activeModelId, id: activeModelId };
   const activePermObj = PERMISSION_MODES.find(m => m.id === currentPermissionMode) || PERMISSION_MODES[0];
   const shortFolder = currentSession ? (currentSession.cwd.split('\\').pop() || currentSession.cwd) : '-';
 
@@ -140,20 +142,39 @@ export function handleSessions(currentSession: ClaudeSession | null): string {
 /**
  * 3. /model
  */
-export const AVAILABLE_MODELS = [
-  {
-    index: 1,
-    id: 'claude-opus-5-5',
-    name: 'Opus 5.5',
-    desc: 'Paling mumpuni untuk pekerjaan ambisius.'
-  },
-  {
-    index: 2,
-    id: 'claude-opus-4-6',
-    name: 'Opus 4.6',
-    desc: 'Model Claude Opus 4.6 standar.'
+export interface AvailableModelItem {
+  index: number;
+  id: string;
+  name: string;
+  desc: string;
+}
+
+export function getAvailableModels(): AvailableModelItem[] {
+  const models = settingsManager.getModels();
+  return models.map((m, idx) => ({
+    index: idx + 1,
+    id: m.id,
+    name: m.name || m.id,
+    desc: m.desc || `Model ${m.name || m.id}`
+  }));
+}
+
+// Proxy dinamis agar pemanggil AVAILABLE_MODELS tetap mendapatkan daftar model terbaru
+export const AVAILABLE_MODELS: AvailableModelItem[] = new Proxy([] as any, {
+  get(target, prop, receiver) {
+    const list = getAvailableModels();
+    if (prop === 'length') return list.length;
+    if (prop === Symbol.iterator) return list[Symbol.iterator].bind(list);
+    if (typeof prop === 'string' && !isNaN(Number(prop))) {
+      return list[Number(prop)];
+    }
+    const val = (list as any)[prop];
+    if (typeof val === 'function') {
+      return val.bind(list);
+    }
+    return Reflect.get(list, prop, receiver);
   }
-];
+});
 
 // Mapping model aktif per session ID di memory & persistent settings.json
 export const sessionModelMap = new Map<string, string>();
@@ -166,28 +187,28 @@ export function getSessionModel(sessionId?: string): string {
 }
 
 export async function handleModel(currentSession: ClaudeSession | null, selectedModel?: string | null): Promise<string> {
-  const activeModelId = currentSession ? getSessionModel(currentSession.sessionId) : 'claude-opus-5-5';
-  const activeModelObj = AVAILABLE_MODELS.find(m => m.id === activeModelId) || AVAILABLE_MODELS[0];
+  const models = getAvailableModels();
+  const defaultModelId = settingsManager.settings.defaultModel || models[0]?.id || 'claude-opus-5-5';
+  const activeModelId = currentSession ? getSessionModel(currentSession.sessionId) : defaultModelId;
+  const activeModelObj = models.find(m => m.id === activeModelId) || models[0] || { name: activeModelId, id: activeModelId, index: 1, desc: '' };
 
   if (selectedModel) {
     const q = selectedModel.trim().toLowerCase();
-    let matched = AVAILABLE_MODELS.find(m => 
+    let matched = models.find(m => 
       String(m.index) === q ||
       m.id.toLowerCase() === q ||
       m.name.toLowerCase() === q ||
-      q.includes(m.name.toLowerCase().replace('opus ', '')) ||
-      (q === 'opus-5.5' && m.id === 'claude-opus-5-5') ||
-      (q === 'opus-4.6' && m.id === 'claude-opus-4-6') ||
-      (q === '5.5' && m.id === 'claude-opus-5-5') ||
-      (q === '4.6' && m.id === 'claude-opus-4-6')
+      m.name.toLowerCase().replace(/\s+/g, '') === q.replace(/\s+/g, '') ||
+      m.id.toLowerCase().includes(q)
     );
 
     if (!matched && q === '0') {
-      matched = AVAILABLE_MODELS[0];
+      matched = models[0];
     }
 
     if (!matched) {
-      return `❌ Model \`${selectedModel}\` tidak valid.\nPilihan model yang tersedia:\n• \`/model 1\` (${AVAILABLE_MODELS[0].name})\n• \`/model 2\` (${AVAILABLE_MODELS[1].name})`;
+      const opts = models.map(m => `• \`/model ${m.index}\` (${m.name} - \`${m.id}\`)`).join('\n');
+      return `❌ Model \`${selectedModel}\` tidak valid.\nPilihan model yang tersedia:\n${opts}\n\n💡 *Tambahkan model baru via terminal:* \`crc model add <id> [nama]\``;
     }
 
     if (currentSession) {

@@ -480,6 +480,7 @@ Bridge remote control untuk Anthropic Claude Desktop di Windows
   \x1b[1;32mcrc service <cmd>\x1b[0m           Pusat Layanan: tray, start, daemon, stop, restart, status, logs (-h)
   \x1b[1;32mcrc session <cmd>\x1b[0m           Pusat Sesi: list, status, switch, model, compact, clear, permission (-h)
   \x1b[1;32mcrc settings <cmd>\x1b[0m          Pusat Setelan: show, set (model, effort, timeout, permission) (-h)
+  \x1b[1;32mcrc model <cmd>\x1b[0m             Pusat Model: list, add, remove, use (-h)
 
 \x1b[1;33mEKSEKUSI CHAT & API:\x1b[0m
   \x1b[1;32mcrc chat "<prompt>" [--verbose]\x1b[0m Kirim prompt dan stream respon Claude real-time di terminal
@@ -959,6 +960,121 @@ async function handleSettingsCommand(subArgs) {
 }
 
 /**
+ * Bantuan lengkap perintah crc model
+ */
+function printModelHelp() {
+  console.log(`
+\x1b[1;36mPANDUAN LENGKAP: crc model <perintah> [opsi...]\x1b[0m
+Manajemen model Claude AI dinamis, pendaftaran model custom, dan setelan default.
+
+\x1b[1;33mPERINTAH MODEL:\x1b[0m
+  \x1b[1;32mcrc model list\x1b[0m (alias: ls)       Tampilkan tabel seluruh model Claude yang terdaftar & model default
+  \x1b[1;32mcrc model add <id> [nama] [desc]\x1b[0m Daftarkan model baru (misal: claude-3-7-sonnet-20250219 atau sonnet)
+  \x1b[1;32mcrc model rm <id|no>\x1b[0m (alias: remove) Hapus model dari daftar
+  \x1b[1;32mcrc model use <id|no>\x1b[0m (alias: set)    Jadikan model sebagai default sistem global
+
+\x1b[1;33mCONTOH PENGGUNAAN:\x1b[0m
+  crc model list                          # Lihat daftar model yang ada
+  crc model add sonnet "Claude Sonnet"    # Daftarkan model sonnet
+  crc model add claude-opus-5-5 "Opus 5.5"# Daftarkan model gateway Opus 5.5
+  crc model use sonnet                    # Set sonnet jadi model default
+  crc model rm 2                          # Hapus model nomor 2
+
+\x1b[1;33mSINKRONISASI KE DISCORD:\x1b[0m
+  Setelah menambah atau menghapus model, jalankan:
+  \x1b[1;32mcrc discord sync\x1b[0m
+  Pilihan dropdown di menu Slash Command Discord (\x1b[1;33m/model pilih\x1b[0m) akan langsung terupdate!
+`);
+}
+
+/**
+ * Subcommand handler untuk 'crc model <subcommand>'
+ */
+async function handleModelCommand(subArgs) {
+  if (subArgs.length === 0 || subArgs.includes('-h') || subArgs.includes('--help') || subArgs[0].toLowerCase() === 'help') {
+    printModelHelp();
+    return;
+  }
+
+  const { settingsManager } = await import(distFile('settings-manager.js'));
+  const subCmd = subArgs[0].toLowerCase();
+  const param1 = subArgs[1];
+  const param2 = subArgs[2];
+  const param3 = subArgs.slice(3).join(' ');
+
+  // LIST / LS
+  if (subCmd === 'list' || subCmd === 'ls') {
+    const models = settingsManager.getModels();
+    const defaultModel = settingsManager.settings.defaultModel || models[0]?.id;
+
+    console.log(`\n\x1b[1;36m=== DAFTAR MODEL CLAUDE TERDAFTAR ===\x1b[0m`);
+    console.log(`\x1b[90m${'─'.repeat(65)}\x1b[0m`);
+    console.log(`\x1b[1m ${'NO'.padEnd(4)} ${'MODEL ID'.padEnd(25)} ${'NAMA'.padEnd(18)} STATUS\x1b[0m`);
+    console.log(`\x1b[90m${'─'.repeat(65)}\x1b[0m`);
+
+    models.forEach((m, idx) => {
+      const isDef = m.id.toLowerCase() === (defaultModel || '').toLowerCase();
+      const statusStr = isDef ? '\x1b[1;32m★ DEFAULT\x1b[0m' : '\x1b[90m-\x1b[0m';
+      console.log(` ${(idx + 1).toString().padEnd(4)} \x1b[1;33m${m.id.padEnd(25)}\x1b[0m ${(m.name || m.id).padEnd(18)} ${statusStr}`);
+    });
+
+    console.log(`\x1b[90m${'─'.repeat(65)}\x1b[0m`);
+    console.log(`\x1b[90mTotal: ${models.length} model terdaftar | Default: \x1b[1;32m${defaultModel}\x1b[0m`);
+    console.log(`\x1b[90mTip: Jalankan \x1b[1;33mcrc discord sync\x1b[0m\x1b[90m untuk menyinkronkan pilihan ke Discord.\x1b[0m\n`);
+    return;
+  }
+
+  // ADD
+  if (subCmd === 'add') {
+    if (!param1) {
+      console.log('\x1b[31m[Error]\x1b[0m Harap masukkan ID model. Contoh: \x1b[1;33mcrc model add sonnet "Claude Sonnet"\x1b[0m');
+      return;
+    }
+    const name = param2 || param1;
+    const desc = param3 || `Model ${name}`;
+    const res = settingsManager.addModel({ id: param1, name, desc });
+    console.log(`\x1b[32m✔ [Berhasil]\x1b[0m ${res.message}`);
+    console.log(`\x1b[1;33m💡 Tip:\x1b[0m Jalankan \x1b[1;32mcrc discord sync\x1b[0m agar pilihan model baru langsung muncul di dropdown Discord!`);
+    return;
+  }
+
+  // REMOVE / RM
+  if (subCmd === 'remove' || subCmd === 'rm') {
+    if (!param1) {
+      console.log('\x1b[31m[Error]\x1b[0m Harap masukkan ID atau Nomor model. Contoh: \x1b[1;33mcrc model rm 2\x1b[0m');
+      return;
+    }
+    const res = settingsManager.removeModel(param1);
+    if (res.success) {
+      console.log(`\x1b[32m✔ [Berhasil]\x1b[0m ${res.message}`);
+      console.log(`\x1b[1;33m💡 Tip:\x1b[0m Jalankan \x1b[1;32mcrc discord sync\x1b[0m untuk memperbarui pilihan di Discord.`);
+    } else {
+      console.log(`\x1b[31m❌ [Gagal]\x1b[0m ${res.message}`);
+    }
+    return;
+  }
+
+  // USE / SET
+  if (subCmd === 'use' || subCmd === 'set') {
+    if (!param1) {
+      console.log('\x1b[31m[Error]\x1b[0m Harap masukkan ID atau Nomor model. Contoh: \x1b[1;33mcrc model use sonnet\x1b[0m');
+      return;
+    }
+    const res = settingsManager.setDefaultModel(param1);
+    if (res.success) {
+      console.log(`\x1b[32m✔ [Berhasil]\x1b[0m ${res.message}`);
+    } else {
+      console.log(`\x1b[31m❌ [Gagal]\x1b[0m ${res.message}`);
+      console.log(`Ketik \x1b[1;33mcrc model list\x1b[0m untuk melihat daftar model yang tersedia.`);
+    }
+    return;
+  }
+
+  console.log(`\x1b[31m[Error]\x1b[0m Subperintah "crc model ${subCmd}" tidak dikenal.`);
+  printModelHelp();
+}
+
+/**
  * Jalankan bot langsung di terminal (foreground / interaktif, bisa Ctrl+C)
  */
 async function runBotForeground(options = {}) {
@@ -1031,6 +1147,18 @@ async function runChannelCliCommand(action, options = {}) {
   });
 
   try {
+    if (action === 'sync') {
+      try {
+        const { syncSlashCommands } = await import(distFile('slash-commands.js'));
+        const { settingsManager } = await import(distFile('settings-manager.js'));
+        const count = await syncSlashCommands(client);
+        const modelCount = settingsManager.getModels().length;
+        console.log(`\x1b[32m✔ [Slash Commands]\x1b[0m ${count} Slash Commands berhasil disinkronkan (${modelCount} pilihan model aktif di Discord).`);
+      } catch (scErr) {
+        console.warn(`\x1b[33m[Slash Commands Warn]\x1b[0m Gagal sinkronisasi command choices: ${scErr.message}`);
+      }
+    }
+
     for (const [, guild] of client.guilds.cache) {
       console.log(`\x1b[34m[Server: ${guild.name}]\x1b[0m Menjalankan perintah channel: \x1b[1;33m${action}\x1b[0m...`);
 
@@ -1245,6 +1373,12 @@ async function main() {
   // settings hub
   if (command === 'settings' || command === 'config' || command === 'setting') {
     await handleSettingsCommand(cleanArgs.slice(1));
+    return;
+  }
+
+  // model hub
+  if (command === 'model' || command === 'models') {
+    await handleModelCommand(cleanArgs.slice(1));
     return;
   }
 

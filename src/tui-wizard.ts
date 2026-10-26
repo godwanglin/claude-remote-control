@@ -161,13 +161,16 @@ async function handleSettingsMenu(): Promise<void> {
     }
 
     if (sChoice === 'model') {
+      const models = settingsManager.getModels();
+      const currentDef = settingsManager.settings.defaultModel;
+      const modelOptions = models.map(m => ({
+        label: m.name,
+        value: m.id,
+        hint: m.id.toLowerCase() === (currentDef || '').toLowerCase() ? '(Sedang Aktif)' : (m.desc || `Model ${m.name}`)
+      }));
       const selected = await p.select({
         message: 'Pilih model Claude default:',
-        options: [
-          { label: 'Claude Opus 5.5', value: 'claude-opus-5-5', hint: 'Paling cerdas & mutakhir (Recommended)' },
-          { label: 'Claude Opus 4.6', value: 'claude-opus-4-6', hint: 'Standar Opus stabil' },
-          { label: 'Claude Sonnet 4.6', value: 'claude-sonnet-4-6', hint: 'Cepat & efisien' }
-        ]
+        options: modelOptions
       });
       if (!p.isCancel(selected)) {
         settingsManager.update('defaultModel', selected as string);
