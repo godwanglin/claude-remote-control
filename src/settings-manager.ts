@@ -5,6 +5,28 @@ import { getRuntimePaths, ensureRuntimeDirs, projectRoot } from './runtime-paths
 
 export type FollowupMode = 'default' | 'queue' | 'steer';
 
+export interface SessionScopedSettings {
+  model?: string;
+  permissionMode?: ClaudePermissionMode;
+  effort?: ClaudeEffortLevel;
+  timeoutMs?: number;
+}
+
+export interface ResolvedSessionConfig {
+  sessionId?: string;
+  model: string;
+  isModelOverridden: boolean;
+  permissionMode: ClaudePermissionMode;
+  isPermissionOverridden: boolean;
+  effort: ClaudeEffortLevel;
+  isEffortOverridden: boolean;
+  timeoutMs: number;
+  isTimeoutOverridden: boolean;
+  verbosity: 'detail' | 'compact';
+  followupMode: FollowupMode;
+  notify: 'silent' | 'mention';
+}
+
 export interface StoredSettings {
   verbosity: 'detail' | 'compact';
   effort: ClaudeEffortLevel;
@@ -13,6 +35,7 @@ export interface StoredSettings {
   permissionMode: ClaudePermissionMode;
   defaultModel: string;
   sessionModels: Record<string, string>;
+  sessionSettings: Record<string, SessionScopedSettings>;
   isManualSessionLocked: boolean;
   manualSessionId?: string;
   followupMode: FollowupMode;
@@ -26,6 +49,7 @@ const DEFAULT_SETTINGS: StoredSettings = {
   permissionMode: 'bypassPermissions',
   defaultModel: 'claude-opus-5-5',
   sessionModels: {},
+  sessionSettings: {},
   isManualSessionLocked: false,
   manualSessionId: undefined,
   followupMode: 'default'
@@ -69,8 +93,23 @@ class SettingsManager {
           sessionModels: {
             ...DEFAULT_SETTINGS.sessionModels,
             ...(parsed.sessionModels || {})
+          },
+          sessionSettings: {
+            ...DEFAULT_SETTINGS.sessionSettings,
+            ...(parsed.sessionSettings || {})
           }
         };
+
+        // Migrasi backwards-compatibility dari sessionModels ke sessionSettings
+        for (const [sId, mId] of Object.entries(this._settings.sessionModels)) {
+          if (!this._settings.sessionSettings[sId]) {
+            this._settings.sessionSettings[sId] = {};
+          }
+          if (!this._settings.sessionSettings[sId].model) {
+            this._settings.sessionSettings[sId].model = mId;
+          }
+        }
+
         const timeoutDesc = this._settings.timeoutMs === 0 ? 'Infinity' : `${this._settings.timeoutMs / 60000}m`;
         console.log(`\x1b[32m[Settings]\x1b[0m Memuat pengaturan dari settings.json: Tampilan=${this._settings.verbosity}, Effort=${this._settings.effort}, Timeout=${timeoutDesc}, Izin=${this._settings.permissionMode}`);
       } else {
@@ -94,6 +133,10 @@ class SettingsManager {
         sessionModels: {
           ...this._settings.sessionModels,
           ...(partial.sessionModels || {})
+        },
+        sessionSettings: {
+          ...this._settings.sessionSettings,
+          ...(partial.sessionSettings || {})
         }
       };
     }
@@ -118,16 +161,81 @@ class SettingsManager {
     this.save();
   }
 
-  public setSessionModel(sessionId: string, modelId: string): void {
-    this._settings.sessionModels[sessionId] = modelId;
+  /**
+   * Mengambil konfigurasi sesi lengkap (Cascading: Global di-override oleh Session Settings)
+   */
+  public getSessionConfig(sessionId?: string): ResolvedSessionConfig {
+    const sOverride = sessionId ? this._settings.sessionSettings?.[sessionId] : undefined;
+    const legacyModel = sessionId ? this._settings.sessionModels?.[sessionId] : undefined;
+
+    const model = sOverride?.model || legacyModel || this._settings.defaultModel || 'claude-opus-5-5';
+    const isModelOverridden = !!(sOverride?.model || legacyModel);
+
+    const permissionMode = sOverride?.permissionMode || this._settings.permissionMode || 'bypassPermissions';
+    const isPermissionOverridden = !!sOverride?.permissionMode;
+
+    const effort = sOverride?.effort || this._settings.effort || 'xhigh';
+    const isEffortOverridden = !!sOverride?.effort;
+
+    const timeoutMs = sOverride?.timeoutMs !== undefined ? sOverride.timeoutMs : this._settings.timeoutMs;
+    const isTimeoutOverridden = sOverride?.timeoutMs !== undefined;
+
+    return {
+      sessionId,
+      model,
+      isModelOverridden,
+      permissionMode,
+      isPermissionOverridden,
+      effort,
+      isEffortOverridden,
+      timeoutMs,
+      isTimeoutOverridden,
+      verbosity: this._settings.verbosity,
+      followupMode: this._settings.followupMode,
+      notify: this._settings.notify
+    };
+  }
+
+  /**
+   * Mengatur nilai setelan khusus untuk satu sesi tertentu
+   */
+  public setSessionSetting<K extends keyof SessionScopedSettings>(sessionId: string, key: K, value: SessionScopedSettings[K]): void {
+    if (!this._settings.sessionSettings) {
+      this._settings.sessionSettings = {};
+    }
+    if (!this._settings.sessionSettings[sessionId]) {
+      this._settings.sessionSettings[sessionId] = {};
+    }
+    this._settings.sessionSettings[sessionId][key] = value;
+    if (key === 'model' && typeof value === 'string') {
+      this._settings.sessionModels[sessionId] = value;
+    }
     this.save();
   }
 
-  public getSessionModel(sessionId?: string): string {
-    if (sessionId && this._settings.sessionModels[sessionId]) {
-      return this._settings.sessionModels[sessionId];
+  /**
+   * Menghapus seluruh setelan khusus sesi agar 100% kembali mengikuti Global Settings
+   */
+  public clearSessionSettings(sessionId: string): void {
+    if (this._settings.sessionSettings && this._settings.sessionSettings[sessionId]) {
+      delete this._settings.sessionSettings[sessionId];
     }
-    return this._settings.defaultModel || 'claude-opus-5-5';
+    if (this._settings.sessionModels && this._settings.sessionModels[sessionId]) {
+      delete this._settings.sessionModels[sessionId];
+    }
+    this.save();
+  }
+
+  public setSessionModel(sessionId: string, modelId: string): void {
+    this.setSessionSetting(sessionId, 'model', modelId);
+  }
+
+  public getSessionModel(sessionId?: string): string {
+    return this.getSessionConfig(sessionId).model;
+  }
+
+  public getSessionPermission(sessionId?: string): ClaudePermissionMode {
+    return this.getSessionConfig(sessionId).permissionMode;
   }
 }
 

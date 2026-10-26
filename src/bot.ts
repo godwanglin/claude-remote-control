@@ -472,18 +472,6 @@ const SLASH_COMMANDS = [
     ]
   },
   {
-    name: 'teleport',
-    description: 'Pindah kontrol ke sesi / project Claude lain (bisa nomor 1-6 atau auto)',
-    options: [
-      {
-        name: 'session_id',
-        description: 'Nomor urut (1-6), Session ID, nama sesi, atau "auto"',
-        type: ApplicationCommandOptionType.String,
-        required: true
-      }
-    ]
-  },
-  {
     name: 'compact',
     description: 'Ringkas riwayat obrolan sesi aktif untuk menghemat konteks token',
     options: [
@@ -892,7 +880,10 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   try {
-    const activeSession = await ensureActiveSession();
+    const channelSession = interaction.channelId
+      ? resolveClaudeSessionFromChannel(interaction.channelId, (interaction.channel as any)?.topic)
+      : null;
+    const activeSession = channelSession || await ensureActiveSession();
 
     // 1. /status
     if (commandName === 'status') {
@@ -904,10 +895,9 @@ client.on('interactionCreate', async (interaction) => {
     // 2. /sessions
     if (commandName === 'sessions') {
       const card = handleSessions(activeSession);
-      const dropdownRow = buildSessionsDropdown(activeSession);
+      const note = '\n> 💡 *Di sistem multi-channel, kamu cukup klik nama channel proyek di sidebar Discord untuk langsung berinteraksi dengan sesi tersebut.*';
       await interaction.reply({
-        content: safeContent(card),
-        components: dropdownRow ? [dropdownRow] : [],
+        content: safeContent(card + note),
         ephemeral: true
       });
       return;
@@ -922,24 +912,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // 4. /teleport
-    if (commandName === 'teleport') {
-      const target = interaction.options.getString('session_id', true);
-      await interaction.deferReply({ ephemeral: true });
-      const result = await handleTeleport(target);
-      if (result.session) {
-        currentTargetSession = result.session;
-        isManualSessionLocked = !result.isAuto;
-        settingsManager.save({
-          isManualSessionLocked: !result.isAuto,
-          manualSessionId: result.isAuto ? undefined : result.session.sessionId
-        });
-      }
-      await interaction.editReply(safeContent(result.message));
-      return;
-    }
-
-    // 5. /compact
+    // 4. /compact
     if (commandName === 'compact') {
       const instruction = interaction.options.getString('instruksi') || '';
       await interaction.deferReply({ ephemeral: true });
@@ -948,10 +921,10 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // 6. /permission
+    // 5. /permission
     if (commandName === 'permission') {
       const mode = interaction.options.getString('mode');
-      const card = handlePermission(mode);
+      const card = handlePermission(mode, activeSession);
       await interaction.reply({ content: safeContent(card), ephemeral: true });
       return;
     }
@@ -1133,18 +1106,22 @@ async function executeClaudeTurn(
   let lastEditTime = 0;
   let editTimer: NodeJS.Timeout | null = null;
 
-  // Setup Runner Headless
-  const sessionModel = getSessionModel(activeSession.sessionId);
-  logDetail('Sesi Target', `"${activeSession.name}" (${activeSession.sessionId.slice(0, 8)}...) | Folder: ${activeSession.cwd} | Model: ${sessionModel}`, '\x1b[1;34m');
+  // Setup Runner Headless dengan Cascading Session Config
+  const sCfg = settingsManager.getSessionConfig(activeSession.sessionId);
+  logDetail(
+    'Sesi Target', 
+    `"${activeSession.name}" (${activeSession.sessionId.slice(0, 8)}...) | Folder: ${activeSession.cwd} | Model: ${sCfg.model}${sCfg.isModelOverridden ? '*' : ''} | Izin: ${sCfg.permissionMode}${sCfg.isPermissionOverridden ? '*' : ''} | Effort: ${sCfg.effort}${sCfg.isEffortOverridden ? '*' : ''}`, 
+    '\x1b[1;34m'
+  );
 
   const runner = new ClaudeHeadless({
     session: activeSession.sessionId,
     cwd: activeSession.cwd,
-    model: sessionModel,
-    permission: currentPermissionMode,
+    model: sCfg.model,
+    permission: sCfg.permissionMode,
     message: rawText,
-    timeout: botSettings.timeoutMs
-  }).effort(botSettings.effort);
+    timeout: sCfg.timeoutMs
+  }).effort(sCfg.effort);
 
   // Lampirkan attachments dari Discord jika ada
   if (hasAttachments) {

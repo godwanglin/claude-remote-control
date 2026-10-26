@@ -1,9 +1,11 @@
 import fs from 'fs';
 import { ClaudeSession, findTranscriptFile } from './ipc.js';
 import { StatusCardData, renderStatusCard } from './status-card.js';
+import { settingsManager } from './settings-manager.js';
 
 export function getSessionStatus(session: ClaudeSession): StatusCardData {
-  let model = 'Opus 4.6 1M · Tinggi';
+  const sCfg = settingsManager.getSessionConfig(session.sessionId);
+  let model = sCfg.model.includes('5-5') ? 'Opus 5.5 · Tinggi' : (sCfg.model.includes('4-6') ? 'Opus 4.6 · Tinggi' : sCfg.model);
   let inputTokens = 85978;
   let totalTokens = 1_000_000;
 
@@ -17,13 +19,15 @@ export function getSessionStatus(session: ClaudeSession): StatusCardData {
           const entry = JSON.parse(lines[i]);
           if (entry.message?.usage) {
             inputTokens = entry.message.usage.input_tokens || inputTokens;
-            const rawModel = (entry.message.model || '').toLowerCase();
-            if (rawModel.includes('5-5') || rawModel.includes('5.5')) {
-              model = 'Opus 5.5 · Tinggi';
-            } else if (rawModel.includes('4-6') || rawModel.includes('4.6') || rawModel.includes('opus') || rawModel === 'gpt-5.6-luna') {
-              model = 'Opus 4.6 · Tinggi';
-            } else if (rawModel) {
-              model = entry.message.model;
+            if (!sCfg.isModelOverridden) {
+              const rawModel = (entry.message.model || '').toLowerCase();
+              if (rawModel.includes('5-5') || rawModel.includes('5.5')) {
+                model = 'Opus 5.5 · Tinggi';
+              } else if (rawModel.includes('4-6') || rawModel.includes('4.6') || rawModel.includes('opus') || rawModel === 'gpt-5.6-luna') {
+                model = 'Opus 4.6 · Tinggi';
+              } else if (rawModel) {
+                model = entry.message.model;
+              }
             }
             break;
           }
@@ -34,11 +38,21 @@ export function getSessionStatus(session: ClaudeSession): StatusCardData {
     }
   }
 
+  const permNameMap: Record<string, string> = {
+    bypassPermissions: 'Lewati izin (Bypass)',
+    auto: 'Auto (Otomatis)',
+    acceptEdits: 'Terima Edit (Accept)',
+    manual: 'Manual (Konfirmasi)',
+    dontAsk: 'Jangan Tanya (Silent)',
+    plan: 'Plan (Hanya Rencana)'
+  };
+  const permissionMode = permNameMap[sCfg.permissionMode] || sCfg.permissionMode;
+
   return {
     claudeCodeVersion: (session as any).version || '2.1.308',
     desktopVersion: '3.6556.2 (Windows x64)',
     model,
-    permissionMode: 'Lewati izin (Bypass)',
+    permissionMode,
     sessionId: session.sessionId,
     sessionName: session.name,
     status: session.status || 'idle',

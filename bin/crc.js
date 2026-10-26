@@ -111,12 +111,100 @@ function formatForTerminal(text, raw = false) {
 }
 
 /**
- * Ambil sesi target saat ini:
- * 1. Tab aktif Claude Desktop
- * 2. Atau sesi terakhir dari projects
+ * Ekstrak flag target sesi dari argumen CLI:
+ * Mendukung: -s=<val>, --session=<val>, --session-id=<val>, -s <val>, dll.
  */
-function resolveCurrentSession() {
+function extractSessionArg(argsList) {
+  let targetQuery = null;
+  const clean = [];
+
+  for (let i = 0; i < argsList.length; i++) {
+    const arg = argsList[i];
+    if (arg.startsWith('-s=')) {
+      targetQuery = arg.slice(3).trim();
+    } else if (arg.startsWith('--session=')) {
+      targetQuery = arg.slice(10).trim();
+    } else if (arg.startsWith('--session-id=')) {
+      targetQuery = arg.slice(13).trim();
+    } else if (arg === '-s' || arg === '--session' || arg === '--session-id') {
+      if (i + 1 < argsList.length) {
+        targetQuery = argsList[i + 1].trim();
+        i++;
+      }
+    } else {
+      clean.push(arg);
+    }
+  }
+
+  return { targetQuery, cleanArgs: clean };
+}
+
+/**
+ * Smart target session resolver:
+ * 1. Nomor urut (1..N) dari tabel flatList
+ * 2. 4 digit kode channel (misal: ed67) atau UUID prefix/suffix
+ * 3. Match judul atau nama folder proyek
+ * 4. Fallback (jika query kosong): Tab aktif Claude Desktop atau Sesi Terakhir
+ */
+function resolveTargetSession(query = null) {
+  const { flatList } = getSidebarProjectGroups();
   const desktop = getActiveDesktopSessionInfo();
+
+  if (query) {
+    const q = query.trim().toLowerCase();
+
+    // 1. Nomor urut dari tabel (1..N)
+    const num = parseInt(q, 10);
+    if (!isNaN(num) && num >= 1 && num <= flatList.length) {
+      const match = flatList[num - 1];
+      return {
+        pid: process.pid,
+        sessionId: match.sessionId,
+        name: match.title,
+        cwd: match.folder,
+        status: 'idle',
+        messagingSocketPath: ''
+      };
+    }
+
+    // 2. 4 digit kode channel (misal: ed67) atau UUID match
+    const codeMatch = flatList.find(s => {
+      const cleanId = s.sessionId.replace(/-/g, '').toLowerCase();
+      const rawId = s.sessionId.toLowerCase();
+      return cleanId.endsWith(q) || rawId.endsWith(q) || rawId.startsWith(q);
+    });
+    if (codeMatch) {
+      return {
+        pid: process.pid,
+        sessionId: codeMatch.sessionId,
+        name: codeMatch.title,
+        cwd: codeMatch.folder,
+        status: 'idle',
+        messagingSocketPath: ''
+      };
+    }
+
+    // 3. Match by Title / Folder substring
+    const textMatch = flatList.find(s => 
+      s.title.toLowerCase().includes(q) || 
+      s.folder.toLowerCase().includes(q)
+    );
+    if (textMatch) {
+      return {
+        pid: process.pid,
+        sessionId: textMatch.sessionId,
+        name: textMatch.title,
+        cwd: textMatch.folder,
+        status: 'idle',
+        messagingSocketPath: ''
+      };
+    }
+
+    // Jika query diberikan tapi tidak ditemukan
+    return null;
+  }
+
+  // Fallback jika query kosong: tab aktif Claude Desktop
   if (desktop) {
     return {
       pid: process.pid,
@@ -128,7 +216,6 @@ function resolveCurrentSession() {
     };
   }
 
-  const { flatList } = getSidebarProjectGroups();
   if (flatList.length > 0) {
     const primary = flatList[0];
     return {
@@ -145,23 +232,95 @@ function resolveCurrentSession() {
 }
 
 /**
+ * Render tabel daftar seluruh sesi Claude secara rapi & profesional
+ */
+function renderSessionsTable() {
+  const { flatList } = getSidebarProjectGroups();
+  const desktop = getActiveDesktopSessionInfo();
+
+  if (flatList.length === 0) {
+    return '\x1b[33mTidak ada sesi Claude yang terdeteksi di PC ini.\x1b[0m';
+  }
+
+  const rows = flatList.map((s, idx) => {
+    const no = String(idx + 1);
+    const code = s.sessionId.split('-').pop()?.slice(-4) || s.sessionId.slice(-4);
+    const cfg = settingsManager.getSessionConfig(s.sessionId);
+    
+    // Model short
+    let modelShort = cfg.model.includes('5-5') ? 'Opus 5.5' : (cfg.model.includes('4-6') ? 'Opus 4.6' : cfg.model);
+    if (cfg.isModelOverridden) modelShort += ' *';
+
+    // Permission short
+    let permShort = cfg.permissionMode === 'bypassPermissions' ? 'Bypass' :
+                    cfg.permissionMode === 'acceptEdits' ? 'Accept' :
+                    cfg.permissionMode === 'plan' ? 'Plan' :
+                    cfg.permissionMode === 'auto' ? 'Auto' : 'Manual';
+    if (cfg.isPermissionOverridden) permShort += ' *';
+
+    // Folder
+    const parts = s.folder.split('\\');
+    const folderShort = parts.length > 2 ? `${parts[0]}\\...\\${parts[parts.length - 1]}` : s.folder;
+
+    // Title
+    const title = s.title.length > 32 ? s.title.slice(0, 30) + '..' : s.title;
+
+    // Active tab indicator
+    const isDesktopTab = desktop && desktop.sessionId === s.sessionId;
+    const status = isDesktopTab ? '\x1b[1;32m● Tab\x1b[0m' : '     ';
+
+    return { no, code, modelShort, permShort, folderShort, title, status };
+  });
+
+  let out = `\n\x1b[1;36m╭── DAFTAR SESI CLAUDE TERDETEKSI (${flatList.length} SESI) ────────────────────────────────────────────────────────╮\x1b[0m\n`;
+  out += `\x1b[1;37m│ \x1b[1;33mNo\x1b[1;37m │ \x1b[1;36mKode\x1b[1;37m │ \x1b[1;35mModel Aktif\x1b[1;37m │ \x1b[1;34mIzin\x1b[1;37m     │ \x1b[1;33mFolder Proyek\x1b[1;37m        │ \x1b[1;32mJudul Sesi\x1b[1;37m                         │ \x1b[1;36mStatus\x1b[1;37m │\x1b[0m\n`;
+  out += `\x1b[1;36m├───┼──────┼─────────────┼──────────┼──────────────────────┼────────────────────────────────────┼────────┤\x1b[0m\n`;
+
+  for (const r of rows) {
+    const padNo = r.no.padEnd(2);
+    const padCode = r.code.padEnd(4);
+    const padModel = r.modelShort.padEnd(11);
+    const padPerm = r.permShort.padEnd(8);
+    const padFolder = r.folderShort.padEnd(20).slice(0, 20);
+    const padTitle = r.title.padEnd(34).slice(0, 34);
+
+    out += `│ \x1b[1;33m${padNo}\x1b[0m │ \x1b[1;36m${padCode}\x1b[0m │ ${padModel} │ ${padPerm} │ ${padFolder} │ ${padTitle} │ ${r.status}  │\n`;
+  }
+
+  out += `\x1b[1;36m╰───┴──────┴─────────────┴──────────┴──────────────────────┴────────────────────────────────────┴────────╯\x1b[0m\n`;
+  out += `\x1b[0;90m  Catatan: Tanda (*) menandakan setelan khusus (override) untuk sesi tersebut.\x1b[0m\n`;
+  out += `\x1b[1;33m  Tip Shortcut:\x1b[0m Targetkan sesi via \x1b[1;32m-s <No>\x1b[0m atau \x1b[1;32m-s <Kode>\x1b[0m (misal: \x1b[1;32mcrc session status -s 1\x1b[0m atau \x1b[1;32mcrc session model 2 -s=ed67\x1b[0m)\n`;
+
+  return out;
+}
+
+/**
+ * Sesi target saat ini (kompatibilitas dengan kode yang belum beralih ke -s)
+ */
+function resolveCurrentSession() {
+  return resolveTargetSession(null);
+}
+
+/**
  * Streaming interaktif CLI menggunakan ClaudeHeadless
  */
 async function executeChatStream(prompt, session = null, isVerbose = false) {
-  const activeSession = session || resolveCurrentSession();
+  const activeSession = session || resolveTargetSession(null);
   if (!activeSession) {
     console.error('\x1b[31m[Error]\x1b[0m Tidak ada sesi Claude yang ditemukan di PC.');
     process.exit(1);
   }
 
-  const modelId = getSessionModel(activeSession.sessionId);
+  const cfg = settingsManager.getSessionConfig(activeSession.sessionId);
+  const modelId = cfg.model;
+  const permMode = cfg.permissionMode;
 
   console.log(`\x1b[1;36m============================================================\x1b[0m`);
   console.log(`  \x1b[1;32mCLAUDE REMOTE HEADLESS STREAM${isVerbose ? ' [VERBOSE DETAIL]' : ''}\x1b[0m`);
   console.log(`\x1b[1;36m============================================================\x1b[0m`);
   console.log(`  Sesi   : \x1b[1;37m${activeSession.name}\x1b[0m (${activeSession.sessionId})`);
   console.log(`  Folder : \x1b[1;33m${activeSession.cwd}\x1b[0m`);
-  console.log(`  Model  : \x1b[1;35m${modelId}\x1b[0m | Izin: \x1b[1;36m${currentPermissionMode}\x1b[0m`);
+  console.log(`  Model  : \x1b[1;35m${modelId}\x1b[0m${cfg.isModelOverridden ? ' *' : ''} | Izin: \x1b[1;36m${permMode}\x1b[0m${cfg.isPermissionOverridden ? ' *' : ''} | Effort: \x1b[1;32m${cfg.effort}\x1b[0m`);
   console.log(`  Prompt : "${prompt}"`);
   console.log(`------------------------------------------------------------\n`);
 
@@ -170,10 +329,10 @@ async function executeChatStream(prompt, session = null, isVerbose = false) {
     session: activeSession.sessionId,
     cwd: activeSession.cwd,
     model: modelId,
-    permission: currentPermissionMode,
+    permission: permMode,
     message: prompt,
-    timeout: 600000
-  });
+    timeout: cfg.timeoutMs
+  }).effort(cfg.effort);
 
   runner.on('status', () => {
     if (isVerbose) {
@@ -565,24 +724,27 @@ function printSessionHelp() {
 Pusat kendali sesi Claude Desktop, context window, model AI, dan perizinan.
 
 \x1b[1;33mPERINTAH SESI:\x1b[0m
-  \x1b[1;32mcrc session list\x1b[0m                 Tampilkan seluruh tab & sesi proyek aktif di Claude Desktop
-  \x1b[1;32mcrc session status\x1b[0m               Lihat kartu status sesi aktif & pemakaian token konteks
-  \x1b[1;32mcrc session switch <no|id|auto>\x1b[0m   Pindah kendali sesi (nomor sesi, UUID, atau 'auto')
-  \x1b[1;32mcrc session model [1|2|id]\x1b[0m       Lihat atau ubah model AI untuk sesi aktif
-  \x1b[1;32mcrc session compact [catatan]\x1b[0m    Ringkas riwayat obrolan sesi aktif untuk menghemat token
-  \x1b[1;32mcrc session clear\x1b[0m                Reset memori percakapan sesi aktif
-  \x1b[1;32mcrc session permission [mode]\x1b[0m    Lihat atau ubah izin eksekusi tool (bypass, plan, dll)
+  \x1b[1;32mcrc session list\x1b[0m                     Tampilkan tabel seluruh tab & sesi proyek aktif di PC
+  \x1b[1;32mcrc session status [-s <id>]\x1b[0m         Lihat kartu status sesi & pemakaian token konteks
+  \x1b[1;32mcrc session model [1|2|id] [-s <id>]\x1b[0m Lihat atau ubah model AI khusus untuk sesi target
+  \x1b[1;32mcrc session permission [mode] [-s <id>]\x1b[0m Lihat atau ubah izin eksekusi tool untuk sesi target
+  \x1b[1;32mcrc session compact [notes] [-s <id>]\x1b[0m Ringkas riwayat obrolan sesi target di background
+  \x1b[1;32mcrc session clear [-s <id>]\x1b[0m          Reset memori percakapan sesi target
+  \x1b[1;32mcrc session reset [-s <id>]\x1b[0m          Hapus override setelan sesi agar kembali mengikuti Global
 
-\x1b[1;33mOPSI:\x1b[0m
-  -h, --help                          Tampilkan panduan bantuan sesi ini
+\x1b[1;33mFORMAT TARGET SESI (-s / --session / --session-id):\x1b[0m
+  -s <No>       : Nomor urut dari tabel 'crc session list' (misal: -s 1, -s 2)
+  -s <Kode>     : 4 digit kode channel Discord (misal: -s ed67, -s=4491)
+  -s <UUID>     : Full UUID sesi
+  (Tanpa -s)    : Otomatis mengikuti tab Claude Desktop yang sedang dibuka
 
 \x1b[1;33mCONTOH PENGGUNAAN:\x1b[0m
-  crc session -h                      # Tampilkan panduan ini
-  crc session list                    # Daftar semua sesi
-  crc session status                  # Status sesi aktif
-  crc session switch auto             # Ikuti tab desktop aktif
-  crc session model 1                 # Ganti ke Opus 5.5
-  crc session compact                 # Ringkas konteks
+  crc session list                     # Tabel semua sesi & shortcut no/kode
+  crc session status -s 1              # Cek status sesi No 1
+  crc session model 2 -s=ed67          # Setel Opus 4.6 untuk sesi kode ed67
+  crc session permission plan -s 2     # Setel mode Plan untuk sesi No 2
+  crc session compact -s 1             # Ringkas konteks sesi No 1
+  crc session reset -s 1               # Kembalikan sesi No 1 ke setelan Global
 `);
 }
 
@@ -595,66 +757,68 @@ async function handleSessionCommand(subArgs, isMarkdown = false, isJson = false)
     return;
   }
 
-  const subCmd = subArgs[0].toLowerCase();
-  const param = subArgs.slice(1).join(' ').trim();
-  const activeSession = resolveCurrentSession();
+  // Ekstrak flag target sesi: -s <target>, --session=<target>, dll
+  const { targetQuery, cleanArgs } = extractSessionArg(subArgs);
+
+  const subCmd = cleanArgs[0].toLowerCase();
+  const param = cleanArgs.slice(1).join(' ').trim();
 
   if (subCmd === 'list' || subCmd === 'sessions' || subCmd === 'all') {
     if (isJson) {
       const { flatList } = getSidebarProjectGroups();
       console.log(JSON.stringify(flatList, null, 2));
     } else {
-      console.log(formatForTerminal(handleSessions(activeSession), isMarkdown));
+      console.log(renderSessionsTable());
     }
+    return;
+  }
+
+  // Resolusi target sesi berdasarkan flag -s atau fallback desktop
+  const targetSession = resolveTargetSession(targetQuery);
+  if (!targetSession) {
+    console.error(`\x1b[31m[Error]\x1b[0m Sesi target "${targetQuery || 'aktif'}" tidak ditemukan.\nJalankan \x1b[1;33mcrc session list\x1b[0m untuk melihat daftar sesi dan nomor shortcut.`);
     return;
   }
 
   if (subCmd === 'status') {
     if (isJson) {
-      const st = activeSession ? getSessionStatus(activeSession) : null;
-      console.log(JSON.stringify({ session: activeSession, status: st }, null, 2));
+      const st = getSessionStatus(targetSession);
+      console.log(JSON.stringify({ session: targetSession, status: st }, null, 2));
     } else {
-      if (activeSession) {
-        console.log(formatForTerminal(handleStatus(activeSession), isMarkdown));
-      } else {
-        console.log('\x1b[31m[Error]\x1b[0m Tidak ada sesi Claude aktif.');
-      }
+      console.log(formatForTerminal(handleStatus(targetSession), isMarkdown));
     }
-    return;
-  }
-
-  if (subCmd === 'switch' || subCmd === 'teleport' || subCmd === 'select') {
-    if (!param) {
-      console.log('Harap masukkan nomor sesi, ID, atau "auto". Contoh: crc session switch 1');
-      return;
-    }
-    const res = await handleTeleport(param);
-    console.log(formatForTerminal(res.message, isMarkdown));
     return;
   }
 
   if (subCmd === 'model') {
-    const card = await handleModel(activeSession, param || null);
-    console.log(formatForTerminal(card, isMarkdown));
-    return;
-  }
-
-  if (subCmd === 'compact') {
-    console.log('\x1b[33m⏳ Meringkas konteks sesi di background...\x1b[0m');
-    const res = await handleCompact(activeSession, param);
-    console.log(formatForTerminal(res.message, isMarkdown));
-    return;
-  }
-
-  if (subCmd === 'clear' || subCmd === 'reset') {
-    const card = await handleClear(activeSession);
+    const card = await handleModel(targetSession, param || null);
     console.log(formatForTerminal(card, isMarkdown));
     return;
   }
 
   if (subCmd === 'permission') {
-    const card = handlePermission(param || null);
+    const card = handlePermission(param || null, targetSession);
     console.log(formatForTerminal(card, isMarkdown));
+    return;
+  }
+
+  if (subCmd === 'compact') {
+    console.log(`\x1b[33m⏳ Meringkas konteks sesi "${targetSession.name}" di background...\x1b[0m`);
+    const res = await handleCompact(targetSession, param);
+    console.log(formatForTerminal(res.message, isMarkdown));
+    return;
+  }
+
+  if (subCmd === 'clear') {
+    const card = await handleClear(targetSession);
+    console.log(formatForTerminal(card, isMarkdown));
+    return;
+  }
+
+  if (subCmd === 'reset') {
+    settingsManager.clearSessionSettings(targetSession.sessionId);
+    console.log(`\x1b[32m✔ [Berhasil]\x1b[0m Setelan khusus untuk sesi \x1b[1;36m"${targetSession.name}"\x1b[0m telah dihapus.`);
+    console.log(`Sesi ini sekarang 100% mengikuti \x1b[1;35mGlobal Settings\x1b[0m.`);
     return;
   }
 
@@ -1149,11 +1313,18 @@ async function main() {
 
   // chat
   if (command === 'chat' || command === 'prompt' || command === 'send') {
-    if (!param) {
-      console.log('Harap masukkan prompt. Contoh: crc chat "Halo Claude" [--verbose]');
+    const { targetQuery, cleanArgs: chatArgs } = extractSessionArg(cleanArgs);
+    const promptText = chatArgs.slice(1).join(' ').trim();
+    if (!promptText) {
+      console.log('Harap masukkan prompt. Contoh: crc chat "Halo Claude" [-s <no|kode>] [--verbose]');
       return;
     }
-    await executeChatStream(param, activeSession, hasVerbose);
+    const targetSession = resolveTargetSession(targetQuery);
+    if (!targetSession) {
+      console.error(`\x1b[31m[Error]\x1b[0m Sesi target "${targetQuery || 'aktif'}" tidak ditemukan.`);
+      return;
+    }
+    await executeChatStream(promptText, targetSession, hasVerbose);
     return;
   }
 

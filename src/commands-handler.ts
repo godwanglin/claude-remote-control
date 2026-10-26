@@ -368,7 +368,7 @@ export const PERMISSION_MODES: { id: ClaudePermissionMode; index: number; name: 
   }
 ];
 
-export function handlePermission(selectedMode?: string | null): string {
+export function handlePermission(selectedMode?: string | null, targetSession?: ClaudeSession | null): string {
   if (selectedMode) {
     const q = selectedMode.trim().toLowerCase();
     const matched = PERMISSION_MODES.find(m => 
@@ -381,13 +381,19 @@ export function handlePermission(selectedMode?: string | null): string {
     );
 
     if (matched) {
-      currentPermissionMode = matched.id;
-      settingsManager.update('permissionMode', matched.id);
+      if (targetSession) {
+        settingsManager.setSessionSetting(targetSession.sessionId, 'permissionMode', matched.id);
+      } else {
+        currentPermissionMode = matched.id;
+        settingsManager.update('permissionMode', matched.id);
+      }
+
       const lines: (string | null)[] = [
         null,
         `${esc}[1;32m[OK] MODE PERIZINAN BERHASIL DIUBAH${esc}[0m`,
         null,
         `  Mode Baru : ${esc}[1;33m${matched.name} (${matched.id})${esc}[0m`,
+        targetSession ? `  Sesi      : ${esc}[1;36m${targetSession.name}${esc}[0m` : `  Cakupan   : ${esc}[1;35mGlobal${esc}[0m`,
         `  Aturan    : ${matched.desc}`,
         null,
         `${esc}[0;37mClaude Code sekarang berjalan dengan aturan izin ini.${esc}[0m`,
@@ -399,14 +405,19 @@ export function handlePermission(selectedMode?: string | null): string {
     }
   }
 
-  const activeModeObj = PERMISSION_MODES.find(m => m.id === currentPermissionMode) || PERMISSION_MODES[0];
+  const effectiveMode = targetSession 
+    ? settingsManager.getSessionPermission(targetSession.sessionId)
+    : (settingsManager.settings.permissionMode || currentPermissionMode);
+  const activeModeObj = PERMISSION_MODES.find(m => m.id === effectiveMode) || PERMISSION_MODES[0];
+  const isOverride = targetSession ? settingsManager.getSessionConfig(targetSession.sessionId).isPermissionOverridden : false;
 
   const lines: (string | null)[] = [
     null,
     `${esc}[1;32m> MODE PERIZINAN AKTIF:${esc}[0m`,
-    `  ${esc}[1;33m${activeModeObj.name} (${activeModeObj.id})${esc}[0m`,
+    `  Mode      : ${esc}[1;33m${activeModeObj.name} (${activeModeObj.id})${esc}[0m${isOverride ? ' [Override Sesi]' : ' [Global]'}`,
+    targetSession ? `  Sesi      : ${esc}[1;36m${targetSession.name}${esc}[0m` : `  Cakupan   : ${esc}[1;35mGlobal${esc}[0m`,
     null,
-    `  Aturan : ${activeModeObj.desc}`,
+    `  Aturan    : ${activeModeObj.desc}`,
     null
   ];
 
