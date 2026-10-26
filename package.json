@@ -1,19 +1,17 @@
 {
   "name": "@devnuby/crc",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Remote control client and Discord bot bridge for Claude Desktop / Claude Code",
   "type": "module",
   "main": "dist/bot.js",
   "bin": {
-    "crc": "./bin/crc.js"
+    "crc": "bin/crc.js"
   },
   "files": [
     "dist",
     "bin",
     "assets",
-    "README.md",
-    ".env.example",
-    "settings.example.json"
+    "README.md"
   ],
   "publishConfig": {
     "access": "public"
