@@ -476,6 +476,7 @@ Bridge remote control untuk Anthropic Claude Desktop di Windows
 \x1b[1;33mDASHBOARD & WIZARD:\x1b[0m
   \x1b[1;32mcrc\x1b[0m                         Buka Dashboard TUI Interaktif (Menu kontrol mewah)
   \x1b[1;32mcrc setup\x1b[0m                   Jalankan Setup Wizard konfigurasi awal bot
+  \x1b[1;32mcrc update\x1b[0m                  Hentikan background service & perbarui CRC ke versi terbaru (@latest)
 
 \x1b[1;33mPERINTAH TERPUSAT (HUB COMMANDS):\x1b[0m
   \x1b[1;32mcrc discord <cmd>\x1b[0m           Pusat Discord: channel sync, clear, token, owner, invite, status (-h)
@@ -1110,6 +1111,111 @@ async function handleModelCommand(subArgs) {
 }
 
 /**
+ * Handler pembaruan mandiri (Auto-Updater) via NPM
+ */
+async function handleUpdateCommand(subArgs = []) {
+  const force = subArgs.includes('--force') || subArgs.includes('-f');
+  console.log(`\n\x1b[1;36m============================================================\x1b[0m`);
+  console.log(`\x1b[1;32m  CRC AUTO-UPDATER (@devnuby/crc)\x1b[0m`);
+  console.log(`\x1b[1;36m============================================================\x1b[0m`);
+  console.log(`Versi terpasang saat ini : \x1b[1;33mv${APP_VERSION}\x1b[0m`);
+  process.stdout.write(`Memeriksa versi terbaru di NPM Registry... `);
+
+  let latestVersion = '';
+  try {
+    const res = await fetch('https://registry.npmjs.org/@devnuby/crc/latest', { signal: AbortSignal.timeout(6000) });
+    if (res.ok) {
+      const data = await res.json();
+      latestVersion = data.version;
+    }
+  } catch (_) {
+    try {
+      const { execSync } = await import('child_process');
+      latestVersion = execSync('npm view @devnuby/crc version', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch (_) {}
+  }
+
+  if (latestVersion) {
+    console.log(`\x1b[1;32mv${latestVersion}\x1b[0m`);
+  } else {
+    console.log(`\x1b[33m(Gagal mengecek NPM, melanjutkan pembaruan...)\x1b[0m`);
+  }
+
+  if (latestVersion && latestVersion === APP_VERSION && !force) {
+    console.log(`\n\x1b[32m✔ CRC kamu sudah dalam versi terbaru (v${APP_VERSION})!\x1b[0m`);
+    console.log(`Gunakan \x1b[1;33mcrc update --force\x1b[0m jika ingin menginstall ulang secara paksa.\n`);
+    return;
+  }
+
+  // 1. Matikan background daemon / service / tray yang aktif
+  const state = getDaemonState();
+  let wasRunning = false;
+  let runningMode = 'tray';
+
+  if (state) {
+    wasRunning = true;
+    runningMode = state.mode || 'tray';
+    console.log(`\n\x1b[33m[1/3]\x1b[0m Menghentikan service yang sedang berjalan (PID: ${state.pid})...`);
+    await stopDaemon();
+  } else {
+    console.log(`\n\x1b[90m[1/3] Tidak ada background service yang sedang aktif.\x1b[0m`);
+  }
+
+  // 2. Jalankan npm install -g @devnuby/crc@latest
+  console.log(`\x1b[36m[2/3]\x1b[0m Mengunduh dan memperbarui paket secara global via npm...`);
+  console.log(`\x1b[90mPerintah: npm install -g @devnuby/crc@latest\x1b[0m\n`);
+
+  const { spawn } = await import('child_process');
+  const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
+  const updateSuccess = await new Promise((resolve) => {
+    const child = spawn(npmCmd, ['install', '-g', '@devnuby/crc@latest'], {
+      stdio: 'inherit',
+      shell: true
+    });
+
+    child.on('close', (code) => {
+      resolve(code === 0);
+    });
+
+    child.on('error', (err) => {
+      console.error(`\x1b[31m[Error NPM]\x1b[0m Gagal menjalankan npm:`, err.message);
+      resolve(false);
+    });
+  });
+
+  if (!updateSuccess) {
+    console.error(`\n\x1b[31m❌ [Gagal Update]\x1b[0m Terjadi kesalahan saat mengupdate CRC.`);
+    console.log(`Coba jalankan manual: \x1b[1;33mnpm install -g @devnuby/crc@latest\x1b[0m\n`);
+    return;
+  }
+
+  // 3. Verifikasi versi setelah update
+  console.log(`\n\x1b[32m[3/3]\x1b[0m Memverifikasi instalasi versi terbaru...`);
+  let newInstalledVersion = latestVersion;
+  try {
+    const { execSync } = await import('child_process');
+    const vOut = execSync('crc -v', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const m = vOut.match(/v?(\d+\.\d+\.\d+.*)/i);
+    if (m) newInstalledVersion = m[1];
+  } catch (_) {}
+
+  console.log(`\x1b[1;32m============================================================\x1b[0m`);
+  console.log(`\x1b[1;32m  ✔ CRC BERHASIL DIPERBARUI KE VERSI v${newInstalledVersion}!\x1b[0m`);
+  console.log(`\x1b[1;32m============================================================\x1b[0m`);
+
+  if (wasRunning) {
+    console.log(`\nService sebelumnya berjalan dalam mode \x1b[1m${runningMode}\x1b[0m.`);
+    console.log(`Menjalankan kembali service...`);
+    await startDaemon(runningMode);
+  } else {
+    console.log(`\nUntuk memulai kembali service:`);
+    console.log(`  \x1b[1;32mcrc service start\x1b[0m   (Jalankan di foreground terminal)`);
+    console.log(`  \x1b[1;32mcrc service tray\x1b[0m    (Jalankan di background taskbar tray)\n`);
+  }
+}
+
+/**
  * Jalankan bot langsung di terminal (foreground / interaktif, bisa Ctrl+C)
  */
 async function runBotForeground(options = {}) {
@@ -1414,6 +1520,12 @@ async function main() {
   // model hub
   if (command === 'model' || command === 'models') {
     await handleModelCommand(cleanArgs.slice(1));
+    return;
+  }
+
+  // update / upgrade
+  if (command === 'update' || command === 'upgrade') {
+    await handleUpdateCommand(cleanArgs.slice(1));
     return;
   }
 
