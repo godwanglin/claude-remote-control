@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Environment and credentials
+.env
+.env.local
+
+# Background daemon runtime & logs
+.daemon/
+*.log
+
+# Build output
+dist/
+
+# Test artifacts & scratch directories
+isolated-test-*/
+add-dir-test-*/
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

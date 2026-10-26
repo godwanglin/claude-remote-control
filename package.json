@@ -1,0 +1,35 @@
+{
+  "name": "claude-remote",
+  "version": "1.0.0",
+  "description": "Remote control client and Discord bot bridge for Claude Desktop / Claude Code",
+  "type": "module",
+  "main": "src/bot.ts",
+  "bin": {
+    "crc": "./bin/crc.js"
+  },
+  "scripts": {
+    "dev": "tsx watch src/bot.ts",
+    "start": "tsx src/bot.ts",
+    "build": "tsc",
+    "crc": "node bin/crc.js",
+    "tray": "node bin/crc.js tray"
+  },
+  "keywords": [
+    "claude",
+    "remote",
+    "discord",
+    "bot"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^18.0.9",
+    "systray2": "^2.1.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
