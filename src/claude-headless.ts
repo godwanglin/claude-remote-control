@@ -62,10 +62,11 @@ export interface TurnSummary {
 }
 
 export function getHostCredentials(): Record<string, string> {
-  const localAppData = process.env.LOCALAPPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Local') : 'C:/Users/aiden/AppData/Local');
+  const localAppData = process.env.LOCALAPPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Local') : path.join(os.homedir(), 'AppData', 'Local'));
   const appDirs = [path.join(localAppData, 'Claude-3p'), path.join(localAppData, 'Claude')];
   const cacheFile = path.join(os.homedir(), '.claude', 'gateway-creds-cache.json');
 
+  // 1. Prioritas 1: File sementara host-creds-*.json saat Claude Desktop sedang aktif
   for (const dir of appDirs) {
     if (fs.existsSync(dir)) {
       const credFiles = fs.readdirSync(dir).filter(f => f.startsWith('host-creds-') && f.endsWith('.json'));
@@ -88,7 +89,45 @@ export function getHostCredentials(): Record<string, string> {
     }
   }
 
-  // Fallback ke cache kredensial jika Claude Desktop sedang ditutup
+  // 2. Prioritas 2: Baca konfigurasi permanen Claude Desktop di configLibrary (misal Claude-3p)
+  for (const dir of appDirs) {
+    const configLibDir = path.join(dir, 'configLibrary');
+    if (fs.existsSync(configLibDir)) {
+      try {
+        let targetConfigFile = '';
+        const metaFile = path.join(configLibDir, '_meta.json');
+        if (fs.existsSync(metaFile)) {
+          const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+          if (meta.appliedId) {
+            const candidate = path.join(configLibDir, `${meta.appliedId}.json`);
+            if (fs.existsSync(candidate)) targetConfigFile = candidate;
+          }
+        }
+        if (!targetConfigFile) {
+          const jsonFiles = fs.readdirSync(configLibDir).filter(f => f.endsWith('.json') && f !== '_meta.json');
+          if (jsonFiles.length > 0) {
+            targetConfigFile = path.join(configLibDir, jsonFiles[0]);
+          }
+        }
+        if (targetConfigFile) {
+          const cfg = JSON.parse(fs.readFileSync(targetConfigFile, 'utf8'));
+          if (cfg.inferenceGatewayApiKey || cfg.inferenceGatewayBaseUrl) {
+            const env: Record<string, string> = {
+              ANTHROPIC_AUTH_TOKEN: cfg.inferenceGatewayApiKey || '',
+              ANTHROPIC_BASE_URL: cfg.inferenceGatewayBaseUrl || '',
+              CLAUDE_CODE_HOST_AUTH_ENV_VAR: 'ANTHROPIC_AUTH_TOKEN'
+            };
+            try {
+              fs.writeFileSync(cacheFile, JSON.stringify(env, null, 2), 'utf8');
+            } catch (_) {}
+            return env;
+          }
+        }
+      } catch (_) {}
+    }
+  }
+
+  // 3. Prioritas 3: Fallback ke cache kredensial jika Claude Desktop sedang ditutup
   if (fs.existsSync(cacheFile)) {
     try {
       const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
@@ -101,7 +140,7 @@ export function getHostCredentials(): Record<string, string> {
 
 export function getClaudeBinary(): string {
   // 1. Cek direktori internal Claude Desktop (Claude-3p atau Claude)
-  const localAppData = process.env.LOCALAPPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Local') : 'C:/Users/aiden/AppData/Local');
+  const localAppData = process.env.LOCALAPPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Local') : path.join(os.homedir(), 'AppData', 'Local'));
   const appDirs = [path.join(localAppData, 'Claude-3p', 'claude-code'), path.join(localAppData, 'Claude', 'claude-code')];
   for (const localAppDir of appDirs) {
     if (fs.existsSync(localAppDir)) {
@@ -375,6 +414,7 @@ export class ClaudeHeadless extends EventEmitter {
       let finalText = '';
       let turnSummary: TurnSummary = { text: '' };
       let lineBuffer = '';
+      let lastErrorDetail = '';
 
       let timer: NodeJS.Timeout | null = null;
       if (this._timeoutMs > 0) {
@@ -412,6 +452,8 @@ export class ClaudeHeadless extends EventEmitter {
                 finalText += delta;
               }, (summary) => {
                 turnSummary = summary;
+              }, (errStr) => {
+                lastErrorDetail = errStr;
               });
             } catch (_) {
               // Jika bukan JSON (misal log biasa)
@@ -444,6 +486,8 @@ export class ClaudeHeadless extends EventEmitter {
                 finalText += delta;
               }, (summary) => {
                 turnSummary = summary;
+              }, (errStr) => {
+                lastErrorDetail = errStr;
               });
             } catch (_) {}
           }
@@ -459,7 +503,7 @@ export class ClaudeHeadless extends EventEmitter {
             this.emit('done', turnSummary);
             resolve(turnSummary);
           } else {
-            const detail = stderrBuffer.trim() || lineBuffer.trim() || finalText.trim();
+            const detail = lastErrorDetail || stderrBuffer.trim() || lineBuffer.trim() || finalText.trim();
             const err = new Error(detail ? `Claude process exited with code ${code}: ${detail}` : `Claude process exited with code ${code}`);
             this.emit('error', err);
             reject(err);
@@ -475,8 +519,19 @@ export class ClaudeHeadless extends EventEmitter {
   private _handleEvent(
     event: any, 
     onDelta: (text: string) => void,
-    onSummary: (summary: TurnSummary) => void
+    onSummary: (summary: TurnSummary) => void,
+    onError?: (err: string) => void
   ) {
+    // 0. Tangkap error event dari Claude Code CLI
+    if (event.type === 'result' && (event.is_error || event.error || event.subtype === 'error')) {
+      const errDetail = typeof event.result === 'string' ? event.result : (event.error?.message || event.error || 'api_error');
+      if (onError) onError(errDetail);
+    }
+    if (event.type === 'assistant' && event.error) {
+      const errDetail = event.message?.content?.[0]?.text || event.error;
+      if (onError) onError(errDetail);
+    }
+
     // 1. Status berpikir
     if (event.type === 'system' && event.status === 'requesting') {
       this.emit('status', 'thinking');

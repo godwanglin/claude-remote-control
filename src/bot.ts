@@ -535,6 +535,14 @@ client.once('clientReady', async (c) => {
     console.log(`\x1b[33m[Security]\x1b[0m Mode Auto-Claim: Kirim pesan apapun di Discord untuk mengklaim bot ini sebagai Owner!`);
   }
 
+  if (process.env.ANTHROPIC_BASE_URL) {
+    console.log(`\x1b[32m[Claude Gateway]\x1b[0m Terhubung ke: ${process.env.ANTHROPIC_BASE_URL}`);
+  } else if (process.env.ANTHROPIC_API_KEY) {
+    console.log(`\x1b[32m[Claude Auth]\x1b[0m Terhubung menggunakan ANTHROPIC_API_KEY resmi`);
+  } else {
+    console.log(`\x1b[1;33m[Claude Gateway ⚠️]\x1b[0m Kredensial Claude Desktop belum ditemukan di %LOCALAPPDATA%\\Claude-3p\\configLibrary`);
+  }
+
   // Cari sesi aktif awal
   if (isManualSessionLocked && settingsManager.settings.manualSessionId) {
     const { flatList } = getSidebarProjectGroups();
