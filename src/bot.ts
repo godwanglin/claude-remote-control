@@ -1040,6 +1040,17 @@ async function executeClaudeTurn(
   let lastEditTime = 0;
   let editTimer: NodeJS.Timeout | null = null;
 
+  // Batas ukuran upload Discord berdasarkan boost tier server (Tier 0 & 1: 25MB, Tier 2: 50MB, Tier 3: 100MB)
+  let maxUploadSize = 25 * 1024 * 1024;
+  if (message.guild) {
+    const tier = Number(message.guild.premiumTier);
+    if (tier === 3) {
+      maxUploadSize = 100 * 1024 * 1024;
+    } else if (tier === 2) {
+      maxUploadSize = 50 * 1024 * 1024;
+    }
+  }
+
   // Setup Runner Headless dengan Cascading Session Config
   const sCfg = settingsManager.getSessionConfig(activeSession.sessionId);
   logDetail(
@@ -1094,22 +1105,44 @@ async function executeClaudeTurn(
 
         if (contentChanged || componentsNeedClear || (finished && isLastBubble)) {
           if (finished && isLastBubble && mediaFiles && mediaFiles.length > 0) {
-            const filesToSend = mediaFiles.slice(0, 10).map(f => ({
+            // Bagi mediaFiles ke dalam batch agar tidak melebihi batas upload Discord per request
+            const batches: DetectedMediaFile[][] = [];
+            let curBatch: DetectedMediaFile[] = [];
+            let curBatchSize = 0;
+
+            for (const f of mediaFiles) {
+              if (curBatch.length > 0 && (curBatchSize + f.size > maxUploadSize || curBatch.length >= 10)) {
+                batches.push(curBatch);
+                curBatch = [];
+                curBatchSize = 0;
+              }
+              curBatch.push(f);
+              curBatchSize += f.size;
+            }
+            if (curBatch.length > 0) batches.push(curBatch);
+
+            const firstBatch = (batches[0] || []).map(f => ({
               attachment: f.path,
               name: f.name
             }));
+
             try {
-              await existingMsg.edit({ content: bubbleContent, files: filesToSend, components: [] });
+              await existingMsg.edit({ content: bubbleContent, files: firstBatch, components: [] });
               lastKnownBubbles[i] = bubbleContent;
-              console.log(`\x1b[32m[Auto-Attach Media]\x1b[0m Berhasil melampirkan ${filesToSend.length} media ke Discord: ${mediaFiles.map(f => f.name).join(', ')}`);
-              continue;
+              console.log(`\x1b[32m[Auto-Attach Media]\x1b[0m Berhasil melampirkan ${firstBatch.length} media ke Discord: ${(batches[0] || []).map(f => f.name).join(', ')}`);
             } catch (err: any) {
               console.warn('[Auto-Attach Edit Fallback]', err.message);
               await existingMsg.edit({ content: bubbleContent, components: [] }).catch(() => {});
-              await message.reply({ files: filesToSend }).catch((e: any) => console.error('[Auto-Attach Send Error]', e));
+              await message.reply({ files: firstBatch }).catch((e: any) => console.error('[Auto-Attach Send Error]', e));
               lastKnownBubbles[i] = bubbleContent;
-              continue;
             }
+
+            // Jika ada batch sisa (misal kumpulan media besar > batas payload per pesan)
+            for (let b = 1; b < batches.length; b++) {
+              const extraFiles = batches[b].map(f => ({ attachment: f.path, name: f.name }));
+              await (message.channel as any).send({ files: extraFiles }).catch((e: any) => console.error('[Auto-Attach Extra Batch Error]', e));
+            }
+            continue;
           }
 
           try {
@@ -1132,13 +1165,43 @@ async function executeClaudeTurn(
         const isCurrentActive = isLastBubble && !finished;
         const targetComponents = isCurrentActive ? [row] : [];
 
+        const sendOptions: any = {
+          content: bubbleContent,
+          components: targetComponents
+        };
+
+        let extraBatches: DetectedMediaFile[][] = [];
+        if (finished && isLastBubble && mediaFiles && mediaFiles.length > 0) {
+          const batches: DetectedMediaFile[][] = [];
+          let curBatch: DetectedMediaFile[] = [];
+          let curBatchSize = 0;
+
+          for (const f of mediaFiles) {
+            if (curBatch.length > 0 && (curBatchSize + f.size > maxUploadSize || curBatch.length >= 10)) {
+              batches.push(curBatch);
+              curBatch = [];
+              curBatchSize = 0;
+            }
+            curBatch.push(f);
+            curBatchSize += f.size;
+          }
+          if (curBatch.length > 0) batches.push(curBatch);
+
+          if (batches.length > 0) {
+            sendOptions.files = batches[0].map(f => ({ attachment: f.path, name: f.name }));
+            extraBatches = batches.slice(1);
+          }
+        }
+
         try {
-          const newMsg = await (message.channel as any).send({
-            content: bubbleContent,
-            components: targetComponents
-          });
+          const newMsg = await (message.channel as any).send(sendOptions);
           bubbleMessages.push(newMsg);
           lastKnownBubbles.push(bubbleContent);
+
+          for (const extra of extraBatches) {
+            const extraFiles = extra.map(f => ({ attachment: f.path, name: f.name }));
+            await (message.channel as any).send({ files: extraFiles }).catch((e: any) => console.error('[Auto-Attach Extra Batch Error]', e));
+          }
         } catch (err: any) {
           console.error(`[Discord Send Bubble ${i + 1} Error]`, err);
         }
@@ -1318,17 +1381,40 @@ async function executeClaudeTurn(
       }
     }
 
-    // Deteksi file media (gambar & audio) yang dihasilkan dan BENAR-BENAR ADA di disk
+    // Deteksi file media (gambar, audio, dan video) yang dihasilkan dan BENAR-BENAR ADA di disk
     const detectedMedia = detectTurnMediaFiles({
       turnSources,
-      cwd: activeSession.cwd
+      cwd: activeSession.cwd,
+      maxFileSize: maxUploadSize
     });
 
+    const uploadableMedia = detectedMedia.filter(f => !f.oversized);
+    const oversizedMedia = detectedMedia.filter(f => f.oversized);
+
     if (detectedMedia.length > 0) {
-      logDetail('Media Terdeteksi', `📎 Ditemukan ${detectedMedia.length} file di disk: ${detectedMedia.map(f => `${f.name} (${(f.size / 1024).toFixed(1)} KB)`).join(', ')}`, '\x1b[1;32m');
+      logDetail(
+        'Media Terdeteksi',
+        `📎 Ditemukan ${detectedMedia.length} file di disk: ${detectedMedia.map(f => {
+          const icon = f.type === 'video' ? '🎬' : f.type === 'audio' ? '🎵' : '🖼️';
+          const sizeMb = (f.size / (1024 * 1024)).toFixed(1);
+          return `${icon} ${f.name} (${sizeMb} MB${f.oversized ? ' [OVERSIZED]' : ''})`;
+        }).join(', ')}`,
+        '\x1b[1;32m'
+      );
     }
 
-    await triggerDiscordUpdate(true, detectedMedia);
+    if (oversizedMedia.length > 0) {
+      const limitMb = Math.round(maxUploadSize / (1024 * 1024));
+      const oversizedText = oversizedMedia.map(f => {
+        const icon = f.type === 'video' ? '🎬 **[Video Melebihi Batas Discord]**' : f.type === 'audio' ? '🎵 **[Audio Melebihi Batas Discord]**' : '🖼️ **[File Melebihi Batas Discord]**';
+        const sizeMb = (f.size / (1024 * 1024)).toFixed(1);
+        return `${icon} \`${f.name}\` (${sizeMb} MB > limit ${limitMb} MB).\nFile berhasil dibuat dan tersimpan di PC: \`${f.path}\``;
+      }).join('\n\n');
+
+      steps.push({ type: 'text', text: oversizedText });
+    }
+
+    await triggerDiscordUpdate(true, uploadableMedia);
     const lastMsg = bubbleMessages[bubbleMessages.length - 1] || replyMessage;
     lastMsg.react('✅').catch(() => {});
     if (botSettings.notify === 'mention') {

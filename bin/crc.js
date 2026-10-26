@@ -438,12 +438,16 @@ async function executeChatStream(prompt, session = null, isVerbose = false) {
       console.log(`  Token: in=${summary.usage.input_tokens || 0}, out=${summary.usage.output_tokens || 0}`);
     }
 
-    // Deteksi file media (gambar & audio) yang dihasilkan di disk
+    // Deteksi file media (gambar, audio, & video) yang dihasilkan di disk
     const mediaFiles = detectTurnMediaFiles({ turnSources, cwd: activeSession.cwd });
     if (mediaFiles.length > 0) {
       console.log(`\n\x1b[1;32m📎 [MEDIA TERDETEKSI]\x1b[0m Ditemukan ${mediaFiles.length} file di disk:`);
       for (const f of mediaFiles) {
-        console.log(`  - \x1b[1;37m${f.name}\x1b[0m (${(f.size / 1024).toFixed(1)} KB) ➜ ${f.path}`);
+        const icon = f.type === 'video' ? '🎬 [VIDEO]' : f.type === 'audio' ? '🎵 [AUDIO]' : '🖼️ [IMAGE]';
+        const sizeStr = f.size >= 1024 * 1024
+          ? `${(f.size / (1024 * 1024)).toFixed(1)} MB`
+          : `${(f.size / 1024).toFixed(1)} KB`;
+        console.log(`  ${icon} \x1b[1;37m${f.name}\x1b[0m (${sizeStr}) ➜ \x1b[90m${f.path}\x1b[0m`);
       }
     }
     console.log(`------------------------------------------------------------\n`);
