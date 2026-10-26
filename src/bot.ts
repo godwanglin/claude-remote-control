@@ -21,7 +21,7 @@ import {
   getPreferredSession
 } from './ipc.js';
 import { getSidebarProjectGroups } from './session-browser.js';
-import { MessageBuilder } from './message-builder.js';
+import { MessageBuilder, packStepsIntoBubbles, StepRecord } from './message-builder.js';
 import { 
   handleStatus, 
   handleSessions, 
@@ -334,6 +334,12 @@ function buildSystemSettingsComponents(): ActionRowBuilder<StringSelectMenuBuild
     .setPlaceholder('Pilih Batas Waktu Proses...')
     .addOptions([
       {
+        label: 'Tanpa Batas (Infinity)',
+        description: 'Bebas waktu, proses berjalan sampai selesai tanpa batas',
+        value: '0',
+        default: botSettings.timeoutMs === 0
+      },
+      {
         label: '3 Menit',
         description: 'Timeout otomatis setelah 180 detik',
         value: '180000',
@@ -356,6 +362,12 @@ function buildSystemSettingsComponents(): ActionRowBuilder<StringSelectMenuBuild
         description: 'Timeout otomatis setelah 900 detik',
         value: '900000',
         default: botSettings.timeoutMs === 900_000
+      },
+      {
+        label: '30 Menit',
+        description: 'Timeout otomatis setelah 1800 detik (Tugas Berat)',
+        value: '1800000',
+        default: botSettings.timeoutMs === 1_800_000
       }
     ]);
 
@@ -603,6 +615,24 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    return;
+  }
+
+  // Handler untuk Tombol Interaktif (misal Tombol Stop)
+  if (interaction.isButton()) {
+    if (interaction.customId.startsWith('stop_')) {
+      if (config.ownerId && interaction.user.id !== config.ownerId) {
+        await interaction.reply({ content: '⛔ Akses ditolak. Bot ini terkunci khusus untuk Owner.', ephemeral: true });
+        return;
+      }
+      if (activeRunner) {
+        await interaction.deferUpdate();
+        activeRunner.abort('user');
+      } else {
+        await interaction.reply({ content: 'ℹ️ Tidak ada proses Claude yang sedang berjalan.', ephemeral: true });
+      }
+      return;
+    }
     return;
   }
 
@@ -927,21 +957,17 @@ client.on('messageCreate', async (message: Message) => {
     components: [row]
   });
 
-  // State Pelacak Alur Eksekusi
-  interface StepRecord {
-    type: 'tool' | 'text';
-    toolName?: string;
-    command?: string;
-    output?: string;
-    isError?: boolean;
-    text?: string;
-  }
-
+  // State Pelacak Alur Eksekusi & Multi-Bubble Delivery
   const steps: StepRecord[] = [];
   const turnSources: string[] = [];
   let isDone = false;
   let statusText = 'Claude sedang berpikir...';
-  let lastContent = '';
+  const bubbleMessages: Message[] = [replyMessage];
+  const lastKnownBubbles: string[] = [''];
+  let isUpdating = false;
+  let pendingUpdate = false;
+  let pendingFinished = false;
+  let pendingMedia: DetectedMediaFile[] | undefined;
   let lastEditTime = 0;
   let editTimer: NodeJS.Timeout | null = null;
 
@@ -974,7 +1000,7 @@ client.on('messageCreate', async (message: Message) => {
   const collector = replyMessage.createMessageComponentCollector({
     componentType: ComponentType.Button,
     filter: (i) => i.customId === stopButtonId,
-    time: botSettings.timeoutMs
+    time: botSettings.timeoutMs > 0 ? botSettings.timeoutMs : 86_400_000
   });
 
   collector.on('collect', async (i) => {
@@ -983,78 +1009,124 @@ client.on('messageCreate', async (message: Message) => {
       return;
     }
     await i.deferUpdate();
-    runner.abort();
+    runner.abort('user');
   });
 
-  // Helper untuk merender isi Discord
-  const renderDiscordMessage = (finished: boolean = false) => {
-    const builder = new MessageBuilder();
+  // Fungsi pengiriman & update multi-bubble Discord (Anti-Potong Codeblock)
+  const performDiscordUpdate = async (finished: boolean = false, mediaFiles?: DetectedMediaFile[]) => {
+    const targetBubbles = packStepsIntoBubbles(
+      steps,
+      botSettings.verbosity,
+      finished ? undefined : `⚙️ *${statusText}*`,
+      1850
+    );
 
-    for (const step of steps) {
-      if (step.type === 'tool' && step.command) {
-        if (botSettings.verbosity === 'detail') {
-          builder.commandAnsi(step.command, step.output, step.isError);
+    for (let i = 0; i < targetBubbles.length; i++) {
+      const bubbleContent = targetBubbles[i];
+      const isLastBubble = i === targetBubbles.length - 1;
+
+      if (i < bubbleMessages.length) {
+        // Bubble sudah ada di Discord
+        const existingMsg = bubbleMessages[i];
+        const isCurrentActive = isLastBubble && !finished;
+        const targetComponents = isCurrentActive ? [row] : [];
+
+        const contentChanged = lastKnownBubbles[i] !== bubbleContent;
+        const componentsNeedClear = !isCurrentActive && existingMsg.components.length > 0;
+
+        if (contentChanged || componentsNeedClear || (finished && isLastBubble)) {
+          if (finished && isLastBubble && mediaFiles && mediaFiles.length > 0) {
+            const filesToSend = mediaFiles.slice(0, 10).map(f => ({
+              attachment: f.path,
+              name: f.name
+            }));
+            try {
+              await existingMsg.edit({ content: bubbleContent, files: filesToSend, components: [] });
+              lastKnownBubbles[i] = bubbleContent;
+              console.log(`\x1b[32m[Auto-Attach Media]\x1b[0m Berhasil melampirkan ${filesToSend.length} media ke Discord: ${mediaFiles.map(f => f.name).join(', ')}`);
+              continue;
+            } catch (err: any) {
+              console.warn('[Auto-Attach Edit Fallback]', err.message);
+              await existingMsg.edit({ content: bubbleContent, components: [] }).catch(() => {});
+              await message.reply({ files: filesToSend }).catch((e: any) => console.error('[Auto-Attach Send Error]', e));
+              lastKnownBubbles[i] = bubbleContent;
+              continue;
+            }
+          }
+
+          try {
+            await existingMsg.edit({
+              content: bubbleContent,
+              components: targetComponents
+            });
+            lastKnownBubbles[i] = bubbleContent;
+          } catch (err: any) {
+            console.warn(`[Discord Edit Bubble ${i + 1} Warn]`, err.message);
+          }
         }
-      } else if (step.type === 'text' && step.text) {
-        builder.text(step.text);
+      } else {
+        // Perlu kirim bubble baru ke channel
+        const prevIdx = bubbleMessages.length - 1;
+        if (prevIdx >= 0 && bubbleMessages[prevIdx].components.length > 0) {
+          await bubbleMessages[prevIdx].edit({ components: [] }).catch(() => {});
+        }
+
+        const isCurrentActive = isLastBubble && !finished;
+        const targetComponents = isCurrentActive ? [row] : [];
+
+        try {
+          const newMsg = await (message.channel as any).send({
+            content: bubbleContent,
+            components: targetComponents
+          });
+          bubbleMessages.push(newMsg);
+          lastKnownBubbles.push(bubbleContent);
+        } catch (err: any) {
+          console.error(`[Discord Send Bubble ${i + 1} Error]`, err);
+        }
       }
     }
-
-    if (!finished) {
-      builder.enter(2).status('running', statusText);
-    }
-
-    return builder.build();
   };
 
   // Throttled Editor: maksimal 1 update tiap 1.2 detik agar tidak kena Discord Rate-Limit
   const triggerDiscordUpdate = async (finished: boolean = false, mediaFiles?: DetectedMediaFile[]) => {
-    const now = Date.now();
-    const content = renderDiscordMessage(finished);
+    if (finished) pendingFinished = true;
+    if (mediaFiles) pendingMedia = mediaFiles;
 
     if (finished) {
       if (editTimer) clearTimeout(editTimer);
-
-      if (mediaFiles && mediaFiles.length > 0) {
-        const filesToSend = mediaFiles.slice(0, 10).map(f => ({
-          attachment: f.path,
-          name: f.name
-        }));
-
-        try {
-          await replyMessage.edit({ content, files: filesToSend, components: [] });
-          lastContent = content;
-          console.log(`\x1b[32m[Auto-Attach Media]\x1b[0m Berhasil melampirkan ${filesToSend.length} media ke Discord: ${mediaFiles.map(f => f.name).join(', ')}`);
-          return;
-        } catch (err: any) {
-          console.warn('[Auto-Attach Edit Fallback]', err.message);
-          await replyMessage.edit({ content, components: [] }).catch(() => {});
-          await message.reply({ files: filesToSend }).catch((e: any) => console.error('[Auto-Attach Send Error]', e));
-          return;
-        }
+      if (isUpdating) {
+        pendingUpdate = true;
+        return;
       }
-
-      if (content !== lastContent) {
-        lastContent = content;
-        replyMessage.edit({ content, components: [] }).catch(() => {});
-      } else {
-        replyMessage.edit({ components: [] }).catch(() => {});
+      isUpdating = true;
+      try {
+        await performDiscordUpdate(true, pendingMedia);
+      } finally {
+        isUpdating = false;
       }
       return;
     }
 
-    if (now - lastEditTime >= 1200) {
+    const now = Date.now();
+    if (now - lastEditTime >= 1200 && !isUpdating) {
       if (editTimer) clearTimeout(editTimer);
       lastEditTime = now;
-      if (content !== lastContent) {
-        lastContent = content;
-        replyMessage.edit({ content }).catch(() => {});
+      isUpdating = true;
+      try {
+        await performDiscordUpdate(false);
+      } finally {
+        isUpdating = false;
+        if (pendingUpdate) {
+          pendingUpdate = false;
+          triggerDiscordUpdate(pendingFinished, pendingMedia);
+        }
       }
     } else if (!editTimer) {
       editTimer = setTimeout(() => {
         editTimer = null;
-        triggerDiscordUpdate(false);
-      }, 1200 - (now - lastEditTime));
+        triggerDiscordUpdate(pendingFinished, pendingMedia);
+      }, Math.max(100, 1200 - (now - lastEditTime)));
     }
   };
 
@@ -1202,7 +1274,8 @@ client.on('messageCreate', async (message: Message) => {
     }
 
     await triggerDiscordUpdate(true, detectedMedia);
-    replyMessage.react('✅').catch(() => {});
+    const lastMsg = bubbleMessages[bubbleMessages.length - 1] || replyMessage;
+    lastMsg.react('✅').catch(() => {});
     if (botSettings.notify === 'mention') {
       message.reply({ content: `🔔 <@${message.author.id}> Tugas selesai!` }).catch(() => {});
     }
@@ -1222,12 +1295,23 @@ client.on('messageCreate', async (message: Message) => {
     }
   });
 
-  runner.on('aborted', async () => {
+  runner.on('aborted', async (reason: 'user' | 'timeout' = 'user') => {
     isDone = true;
     activeRunner = null;
     collector.stop();
-    logDetail('Aborted', 'Eksekusi dihentikan oleh pengguna (tombol Stop).', '\x1b[31m');
-    steps.push({ type: 'text', text: '\n\n⏹️ **[Dibatalkan]** Eksekusi dihentikan oleh pengguna.' });
+
+    if (reason === 'timeout') {
+      const mins = Math.round(botSettings.timeoutMs / 60000);
+      logDetail('Timeout', `Tugas dihentikan otomatis karena mencapai batas timeout ${mins} menit.`, '\x1b[1;33m');
+      steps.push({
+        type: 'text',
+        text: `\n\n⏱️ **[Timeout ${mins} Menit]** Proses Claude otomatis dihentikan karena durasi tugas melebihi batas waktu (${mins} menit).\n💡 *Tip: Jika tugasmu panjang/kompleks (seperti testing Roblox Studio), kamu bisa menaikkan batas waktu di \`/settings\` ke 10, 15, atau 30 menit.*`
+      });
+    } else {
+      logDetail('Aborted', 'Eksekusi dihentikan oleh pengguna (tombol Stop).', '\x1b[31m');
+      steps.push({ type: 'text', text: '\n\n⏹️ **[Dibatalkan]** Eksekusi dihentikan oleh pengguna.' });
+    }
+
     triggerDiscordUpdate(true);
   });
 

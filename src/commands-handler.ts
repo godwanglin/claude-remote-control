@@ -89,7 +89,9 @@ export function renderSystemSettingsCard(): string {
     ? 'Normal (medium)'
     : 'Cepat (low)';
 
-  const timeoutLabel = `${botSettings.timeoutMs / 60000} Menit`;
+  const timeoutLabel = botSettings.timeoutMs === 0 
+    ? 'Tanpa Batas (Infinity)' 
+    : `${botSettings.timeoutMs / 60000} Menit`;
   const notifyLabel = botSettings.notify === 'mention' ? 'Mention (@User)' : 'Silent (Tanpa Tag)';
 
   const lines: (string | null)[] = [

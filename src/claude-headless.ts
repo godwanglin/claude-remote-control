@@ -149,7 +149,7 @@ export class ClaudeHeadless extends EventEmitter {
       if (options.effort) this._effort = options.effort;
       if (options.message) this._prompt = options.message;
       if (options.attachments) this.attachments(options.attachments);
-      if (options.timeout) this._timeoutMs = options.timeout;
+      if (options.timeout !== undefined) this._timeoutMs = options.timeout;
       if (options.binary) this._customBinary = options.binary;
       if (options.env) this._extraEnv = options.env;
     }
@@ -211,13 +211,13 @@ export class ClaudeHeadless extends EventEmitter {
   /**
    * Menghentikan paksa proses eksekusi
    */
-  abort(): void {
+  abort(reason: 'user' | 'timeout' = 'user'): void {
     if (this._childProcess && !this._killed) {
       this._killed = true;
       try {
         this._childProcess.kill();
       } catch (_) {}
-      this.emit('aborted');
+      this.emit('aborted', reason);
     }
   }
 
@@ -346,7 +346,7 @@ export class ClaudeHeadless extends EventEmitter {
       let timer: NodeJS.Timeout | null = null;
       if (this._timeoutMs > 0) {
         timer = setTimeout(() => {
-          this.abort();
+          this.abort('timeout');
           reject(new Error(`ClaudeHeadless: Eksekusi melebihi batas waktu (${this._timeoutMs / 1000}s)`));
         }, this._timeoutMs);
       }
@@ -414,8 +414,7 @@ export class ClaudeHeadless extends EventEmitter {
           turnSummary.text = finalText.trim() || turnSummary.text;
 
           if (this._killed) {
-            this.emit('aborted');
-            resolve({ text: '(Dibatalkan oleh pengguna)' });
+            resolve({ text: '(Dibatalkan / waktu habis)' });
             return;
           }
 
