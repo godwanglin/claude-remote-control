@@ -1782,5 +1782,14 @@ client.on('messageCreate', async (message: Message) => {
 
 client.login(config.discordToken).catch(err => {
   console.error('\x1b[31m[Login Error]\x1b[0m Gagal login ke Discord:', err.message);
+  if (err.message && err.message.toLowerCase().includes('disallowed intents')) {
+    console.error('\n\x1b[1;33m[Solusi Disallowed Intents]\x1b[0m');
+    console.error('1. Buka Discord Developer Portal: \x1b[36mhttps://discord.com/developers/applications\x1b[0m');
+    console.error('2. Pilih aplikasi bot kamu, lalu klik menu "Bot" di sidebar kiri.');
+    console.error('3. Gulir ke bawah ke bagian "Privileged Gateway Intents".');
+    console.error('4. Aktifkan centang: \x1b[32m[✔] MESSAGE CONTENT INTENT\x1b[0m');
+    console.error('5. Klik tombol hijau "Save Changes" di bawah.');
+    console.error('6. Jalankan ulang bot!\n');
+  }
   process.exit(1);
 });

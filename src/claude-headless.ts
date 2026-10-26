@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, execSync, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 
 export type ClaudePermissionMode = 
@@ -100,6 +100,7 @@ export function getHostCredentials(): Record<string, string> {
 }
 
 export function getClaudeBinary(): string {
+  // 1. Cek direktori internal Claude Desktop (Claude-3p atau Claude)
   const localAppData = process.env.LOCALAPPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Local') : 'C:/Users/aiden/AppData/Local');
   const appDirs = [path.join(localAppData, 'Claude-3p', 'claude-code'), path.join(localAppData, 'Claude', 'claude-code')];
   for (const localAppDir of appDirs) {
@@ -117,6 +118,34 @@ export function getClaudeBinary(): string {
       }
     }
   }
+
+  // 2. Cek npm global direct binary (@anthropic-ai/claude-code)
+  const appData = process.env.APPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Roaming') : '');
+  if (appData) {
+    const npmCandidate = path.join(appData, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+    if (fs.existsSync(npmCandidate)) {
+      return npmCandidate;
+    }
+  }
+
+  // 3. Cek lokasi perintah via where.exe di Windows
+  if (process.platform === 'win32') {
+    try {
+      const output = execSync('where.exe claude', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      const lines = output.split(/\r?\n/);
+      for (const line of lines) {
+        if (line.toLowerCase().endsWith('.exe') && fs.existsSync(line)) {
+          return line;
+        }
+        const dir = path.dirname(line);
+        const nestedExe = path.join(dir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+        if (fs.existsSync(nestedExe)) {
+          return nestedExe;
+        }
+      }
+    } catch (_) {}
+  }
+
   return 'claude';
 }
 
@@ -356,10 +385,12 @@ export class ClaudeHeadless extends EventEmitter {
       }
 
       try {
+        const useShell = process.platform === 'win32' && (!binPath.toLowerCase().endsWith('.exe'));
         const child = spawn(binPath, args, {
           cwd: this._cwd,
           env: mergedEnv,
-          stdio: ['pipe', 'pipe', 'pipe']
+          stdio: ['pipe', 'pipe', 'pipe'],
+          ...(useShell ? { shell: true } : {})
         });
         this._childProcess = child;
 
