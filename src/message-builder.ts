@@ -374,7 +374,23 @@ export function packStepsIntoBubbles(
 
   for (let i = 0; i < units.length; i++) {
     const unit = units[i];
-    const separator = currentBubble.length > 0 ? '\n\n' : '';
+    let separator = '';
+
+    if (currentBubble.length > 0) {
+      const prevEndsWithCode = currentBubble.trimEnd().endsWith('```');
+      const unitStartsWithCode = unit.trimStart().startsWith('```');
+
+      if (prevEndsWithCode && unitStartsWithCode) {
+        // Antar codeblock: rapat / dempet tanpa jeda baris kosong (cukup 1 enter \n)
+        separator = '\n';
+      } else if (prevEndsWithCode || unitStartsWithCode) {
+        // Antara codeblock dan teks biasa
+        separator = '\n';
+      } else {
+        // Antar paragraf teks biasa
+        separator = '\n\n';
+      }
+    }
 
     if (currentBubble.length + separator.length + unit.length <= maxBubbleLen) {
       currentBubble += separator + unit;
@@ -396,7 +412,7 @@ export function packStepsIntoBubbles(
 
   // Tambahkan status footer ke bubble terakhir jika ada
   if (statusFooter) {
-    const sep = currentBubble.length > 0 ? '\n\n' : '';
+    const sep = currentBubble.trimEnd().endsWith('```') ? '\n' : (currentBubble.length > 0 ? '\n\n' : '');
     if (currentBubble.length + sep.length + statusFooter.length <= 1950) {
       currentBubble += sep + statusFooter;
     } else {
